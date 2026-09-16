@@ -7685,24 +7685,34 @@ class _PlayPageState extends State<PlayPage> {
                                     memCacheWidth: (w * 2).toInt())
                               else
                                 Container(
-                                    color: AppTheme.goldSoft),
+                                    decoration: BoxDecoration(
+                                  color: AppTheme.goldSoft,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                      color: AppTheme.gold, width: 1.2),
+                                )),
                               Container(
                                   color: Colors.black
                                       .withValues(alpha: 0.18)),
                             ]),
                       ),
                     )
-                  : Stack(fit: StackFit.expand, children: [
-                      if (lead.art.isNotEmpty)
-                        CachedNetworkImage(
-                            imageUrl: lead.art,
-                            fit: BoxFit.cover,
-                            memCacheWidth: (w * 2).toInt())
-                      else
-                        Container(
+                    : Stack(fit: StackFit.expand, children: [
+                        if (lead.art.isNotEmpty)
+                          CachedNetworkImage(
+                              imageUrl: lead.art,
+                              fit: BoxFit.cover,
+                              memCacheWidth: (w * 2).toInt())
+                        else
+                          Container(
+                              decoration: BoxDecoration(
                             color: lead.tapped
                                 ? AppTheme.goldSoft
-                                : _tableStyle.panel),
+                                : _tableStyle.panel,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: AppTheme.gold, width: 1.2),
+                          )),
                       Container(
                           color: Colors.black.withValues(alpha: 0.18)),
                     ]),
@@ -7776,7 +7786,11 @@ class _PlayPageState extends State<PlayPage> {
               clipBehavior: Clip.antiAlias,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
-                side: BorderSide.none,
+                // Sem arte: bordinha simples para destacar na mesa.
+                side: t.art.isEmpty
+                    ? const BorderSide(
+                        color: AppTheme.gold, width: 1.2)
+                    : BorderSide.none,
               ),
               child: Stack(fit: StackFit.expand, children: [
                 if (t.art.isNotEmpty)

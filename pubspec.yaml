@@ -49,5 +49,13 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: "assets/icons/icon_app.png"
+  # Legado (API 21-25): o pacote EXIGE image_path; sem ele a geração
+  # aborta. Em API 26+ vale o Adaptive abaixo. Usa o background
+  # (o icon_app.png antigo não existe mais no projeto).
+  image_path: "assets/icons/background.png"
+  # Foreground com área segura: derivado MECÂNICO do foreground.png
+  # (mesmo símbolo, só reduzido p/ caber no círculo de 66dp; originais
+  # intactos — para voltar, aponte de volta para foreground.png).
+  adaptive_icon_background: "assets/icons/background.png"
+  adaptive_icon_foreground: "assets/icons/foreground_safe.png"
   min_sdk_android: 21
