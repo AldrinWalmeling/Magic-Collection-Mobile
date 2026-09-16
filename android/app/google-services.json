@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "503876111267",
+    "project_id": "magic-collection-project",
+    "storage_bucket": "magic-collection-project.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:503876111267:android:ff60d745e2ff87432fa816",
+        "android_client_info": {
+          "package_name": "com.magic.collection.magic_collection"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjEABp399r3TEZUJ8dx23i4dDGusR4ylA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
