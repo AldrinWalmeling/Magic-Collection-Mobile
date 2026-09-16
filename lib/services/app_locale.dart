@@ -115,6 +115,18 @@ class AppLocale {
       'es': 'Apagado muestra solo el sello GIRADA.',
       'zh': '关闭则只显示横置标记。'
     },
+    'settings_stack': {
+      'pt': 'Máximo de cartas empilhadas',
+      'en': 'Max stacked cards',
+      'es': 'Máximo de cartas apiladas',
+      'zh': '最大堆叠牌数'
+    },
+    'settings_stack_sub': {
+      'pt': 'Quantas cópias aparecem atrás da principal.',
+      'en': 'How many copies show behind the front card.',
+      'es': 'Cuántas copias se ven detrás de la principal.',
+      'zh': '主页牌后方显示几张。'
+    },
     'settings_display': {
       'pt': 'Exibição das cartas',
       'en': 'Card display',
@@ -1576,6 +1588,12 @@ class AppLocale {
       'zh': '房间邀请'
     },
     'fr_enter': {'pt': 'Entrar', 'en': 'Join', 'es': 'Entrar', 'zh': '加入'},
+    'fr_rooms': {
+      'pt': 'Salas dos amigos',
+      'en': "Friends' rooms",
+      'es': 'Salas de amigos',
+      'zh': '好友的房间'
+    },
     'fr_invite_body': {
       'pt': '{n} convidou você para uma partida Online.',
       'en': '{n} invited you to an Online match.',
@@ -2157,6 +2175,30 @@ class AppLocale {
       'en': 'TAPPED',
       'es': 'GIRADA',
       'zh': '已横置'
+    },
+    'tok_now_tapped': {
+      'pt': '{n} virada',
+      'en': '{n} tapped',
+      'es': '{n} girada',
+      'zh': '{n}已横置'
+    },
+    'tok_now_untapped': {
+      'pt': '{n} desvirada',
+      'en': '{n} untapped',
+      'es': '{n} enderezada',
+      'zh': '{n}已重置'
+    },
+    'tok_many_tapped': {
+      'pt': '{q}× {n} viradas',
+      'en': '{q}× {n} tapped',
+      'es': '{q}× {n} giradas',
+      'zh': '{q}× {n}已横置'
+    },
+    'tok_many_untapped': {
+      'pt': '{q}× {n} desviradas',
+      'en': '{q}× {n} untapped',
+      'es': '{q}× {n} enderezadas',
+      'zh': '{q}× {n}已重置'
     },
     // ---------- Vida ----------
     'life_title': {

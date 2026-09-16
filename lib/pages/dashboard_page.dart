@@ -350,27 +350,31 @@ class _DashboardPageState extends State<DashboardPage> {
                                     fontSize: 16,
                                   ),
                                 ),
-                                const Spacer(),
-                                DropdownButton<String>(
-                                  value: _currency,
-                                  dropdownColor: AppTheme.panel,
-                                  items: CurrencyService.currencies
-                                      .map(
-                                        (c) => DropdownMenuItem(
-                                          value: c,
-                                          child: Text(c),
-                                        ),
-                                      )
-                                      .toList(),
-                                  onChanged: (v) {
-                                    if (v != null) {
-                                      CurrencyService.instance
-                                          .setCurrency(v);
-                                    }
-                                  },
-                                ),
                               ],
                             ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: SegmentedButton<String>(
+                                style: SegmentedButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  textStyle:
+                                      const TextStyle(fontSize: 12),
+                                ),
+                                segments: [
+                                  for (final c
+                                      in CurrencyService.currencies)
+                                    ButtonSegment(
+                                        value: c, label: Text(c)),
+                                ],
+                                selected: {_currency},
+                                showSelectedIcon: false,
+                                onSelectionChanged: (s) =>
+                                    CurrencyService.instance
+                                        .setCurrency(s.first),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
                             Text(
                               '${fmt.format(converted)} • ${usd.toStringAsFixed(2)} USD',
                               style: const TextStyle(

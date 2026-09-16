@@ -3,6 +3,7 @@ import '../services/app_events.dart';
 import '../services/app_locale.dart';
 import '../services/display_prefs.dart';
 import '../services/play_prefs.dart';
+import '../theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/currency_service.dart';
 import '../services/price_reference.dart';
@@ -26,6 +27,23 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _load();
+    AppLocale.current.addListener(_onLangChanged);
+  }
+
+  @override
+  void dispose() {
+    AppLocale.current.removeListener(_onLangChanged);
+    super.dispose();
+  }
+
+  /// Idioma trocado aqui mesmo: a moeda segue (salvo escolha manual)
+  /// e o dropdown reflete na hora.
+  Future<void> _onLangChanged() async {
+    await CurrencyService.instance.applyLanguageDefault(AppLocale.code);
+    if (mounted) {
+      setState(
+          () => _currency = CurrencyService.instance.currency.value);
+    }
   }
 
   Future<void> _load() async {
@@ -140,6 +158,49 @@ class _SettingsPageState extends State<SettingsPage> {
                                         AppLocale.t('settings_rotate_sub')),
                                     value: rotate,
                                     onChanged: PlayPrefs.setRotateTapped,
+                                  ),
+                                ),
+                                ValueListenableBuilder<int>(
+                                  valueListenable: PlayPrefs.stackVisible,
+                                  builder: (_, layers, __) => Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                              Icons.layers_outlined,
+                                              color: Colors.grey),
+                                          const SizedBox(width: 16),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(AppLocale.t(
+                                                    'settings_stack')),
+                                                Text(
+                                                    '${AppLocale.t('settings_stack_sub')} ($layers)',
+                                                    style: const TextStyle(
+                                                        color: Colors.grey,
+                                                        fontSize: 12)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Slider(
+                                        value: layers.toDouble(),
+                                        min: PlayPrefs.stackMin.toDouble(),
+                                        max: PlayPrefs.stackMax.toDouble(),
+                                        divisions: PlayPrefs.stackMax -
+                                            PlayPrefs.stackMin,
+                                        label: '$layers',
+                                        activeColor: AppTheme.gold,
+                                        onChanged: (v) => PlayPrefs
+                                            .setStackVisible(v.round()),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],

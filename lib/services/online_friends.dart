@@ -22,13 +22,33 @@ class OnlineFriend {
 
   factory OnlineFriend.fromEntry(
       String uid, String key, Map<String, dynamic> m) {
-    final parts = key.split('__');
+    // A chave é {friendUid}__{friendProfile}. O uid do AMIGO vem da
+    // chave — nunca o uid do dono passado por parâmetro (era esse o
+    // bug: convites iam para si mesmo e a presença vigiada era a sua).
     return OnlineFriend(
-      uid: uid,
-      profileId: parts.length > 1 ? parts.sublist(1).join('__') : '',
+      uid: _friendUidFromKey(key, fallback: uid),
+      profileId: _friendProfileFromKey(key),
       name: (m['name'] ?? '?').toString(),
       code: (m['code'] ?? '').toString(),
     );
+  }
+
+  /// Formato atual: {uid}__{perfil}. Legado: {uid}_{perfil} (UIDs
+  /// anônimos têm 28 chars sem underscore — dá para separar).
+  static String _friendUidFromKey(String key, {String fallback = ''}) {
+    final d = key.split('__');
+    if (d.length > 1 && d.first.isNotEmpty) return d.first;
+    if (key.length > 29 && key[28] == '_') {
+      return key.substring(0, 28);
+    }
+    return fallback;
+  }
+
+  static String _friendProfileFromKey(String key) {
+    final d = key.split('__');
+    if (d.length > 1) return d.sublist(1).join('__');
+    if (key.length > 29 && key[28] == '_') return key.substring(29);
+    return '';
   }
 }
 
@@ -207,7 +227,11 @@ class OnlineFriends {
     if (existing.value is Map) {
       final m = Map<String, dynamic>.from(
           (existing.value as Map).map((k, v) => MapEntry(k.toString(), v)));
-      if (m.keys.any((k) => k.toString().startsWith('${toUid}__'))) {
+      // Casa os dois formatos de chave (__ atual, _ legado).
+      if (m.keys.any((k) {
+        final key = k.toString();
+        return key == toUid || key.startsWith('${toUid}_');
+      })) {
         throw StateError('Vocês já são amigos.');
       }
     }
@@ -267,7 +291,9 @@ class OnlineFriends {
         'code': req.fromCode,
         'at': at,
       });
-      await _database.ref('friends/${req.fromUid}/${uid}_$myProfile').set({
+      // Mesmo separador (__) dos dois lados — misturar _ e __ quebrava
+      // a leitura do par (perfil vazio, duplicatas).
+      await _database.ref('friends/${req.fromUid}/${uid}__$myProfile').set({
         'name': myName,
         'code': myCode,
         'at': at,
@@ -278,7 +304,19 @@ class OnlineFriends {
 
   Future<void> removeFriend(String friendUid, String friendProfile) async {
     final uid = await myUid;
-    await _database.ref('friends/$uid/${friendUid}_$friendProfile').remove();
+    // Tenta os dois formatos (__ atual, _ legado).
+    try {
+      await _database
+          .ref('friends/$uid/${friendUid}__$friendProfile')
+          .remove();
+    } catch (_) {}
+    if (friendProfile.isNotEmpty) {
+      try {
+        await _database
+            .ref('friends/$uid/${friendUid}_$friendProfile')
+            .remove();
+      } catch (_) {}
+    }
     // Melhor esforço do outro lado (pode falhar por regras/uid).
     try {
       final snap = await _database.ref('friends/$friendUid').get();

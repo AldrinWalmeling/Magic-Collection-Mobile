@@ -40,6 +40,12 @@ Future<void> main() async {
   await PlayPrefs.load();
   await DisplayPrefs.load();
   await CurrencyService.instance.loadCurrency();
+  // Moeda padrão segue o idioma (PT->BRL, demais->USD), exceto se o
+  // usuário já escolheu manualmente. Vale para trocas futuras também.
+  await CurrencyService.instance.applyLanguageDefault(AppLocale.code);
+  AppLocale.current.addListener(() {
+    CurrencyService.instance.applyLanguageDefault(AppLocale.code);
+  });
 
   // Câmbio em segundo plano
   CurrencyService.instance.startBackgroundRefresh();

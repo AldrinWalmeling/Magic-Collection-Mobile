@@ -43,6 +43,26 @@ class CurrencyService {
     } catch (_) {}
   }
 
+  /// Moeda padrão de cada idioma do app (PT -> BRL, demais -> USD).
+  static String currencyForLanguage(String langCode) {
+    switch (langCode) {
+      case 'pt':
+        return 'BRL';
+      default:
+        return 'USD';
+    }
+  }
+
+  /// Segue o idioma do app, EXCETO se o usuário já escolheu uma moeda
+  /// manualmente no dropdown (escolha explícita sempre vence).
+  Future<void> applyLanguageDefault([String? langCode]) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey('currency')) return;
+      await setCurrency(currencyForLanguage(langCode ?? 'en'));
+    } catch (_) {}
+  }
+
   Future<void> startBackgroundRefresh() async {
     await refresh(force: true);
     _timer?.cancel();

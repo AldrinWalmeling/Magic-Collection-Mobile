@@ -326,6 +326,8 @@ class OnlineMatch {
   }
 
   /// Marca a sala como iniciada. Apenas o host pode fazer isso.
+  /// Solo liberado (igual ao LAN): dá para entrar na mesa sozinho,
+  /// praticar e receber gente depois. Sala vazia continua fora.
   Future<void> startRoom() async {
     _ensureInRoom();
     await authenticate();
@@ -336,8 +338,8 @@ class OnlineMatch {
     if (info.hostId != myUid) {
       throw StateError('Somente o anfitrião pode iniciar a partida.');
     }
-    if (info.players.length < 2) {
-      throw StateError('É necessário ter pelo menos 2 jogadores.');
+    if (info.players.isEmpty) {
+      throw StateError('Não há jogadores na sala.');
     }
     await room.update({
       'status': statusStarted,

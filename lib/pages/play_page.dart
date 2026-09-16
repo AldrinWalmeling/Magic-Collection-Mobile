@@ -351,6 +351,10 @@ class _PlayPageState extends State<PlayPage> {
     'G': Color(0xFF4CAF50),
     'C': Color(0xFFB0BEC5),
   };
+
+  /// Número sempre legível: preto nos pontos claros (W e C), branco
+  /// nos escuros. Branco sobre creme/cinza-claro some na tela.
+  static bool _manaDarkText(String color) => color == 'W' || color == 'C';
   static const _tableStyles = {
     'midnight': _TableStyle(
         'su_th_midnight', AppTheme.bg, Color(0xFF20242D), Color(0xFFD4AF37)),
@@ -372,6 +376,10 @@ class _PlayPageState extends State<PlayPage> {
   List<String> _hostIps = [];
   int _hostIpIdx = 0;
   int _peers = 0;
+
+  /// Banner de reconexão dispensado ("lan:IP" / "on:CODIGO"). Some até
+  /// que uma NOVA queda aconteça (chave diferente) — sem boolean travado.
+  String _dismissedReconnect = '';
   bool _hosting = false;
   bool _joining = false;
   final _joinIp = TextEditingController();
@@ -500,7 +508,8 @@ class _PlayPageState extends State<PlayPage> {
   /// a identidade com que entrou (o banner mostra se divergir).
   void _onProfileChanged() {
     if (!mounted) return;
-    _loadProfileIdentity();
+    // Presença (nome/sala dos amigos) acompanha o perfil novo.
+    _loadProfileIdentity().then((_) => _refreshPresenceRoom());
     if (_inMatch) {
       AppToast.show(context, AppLocale.t('prof_match_kept'));
       return;
@@ -568,6 +577,7 @@ class _PlayPageState extends State<PlayPage> {
     _loadProfileIdentity();
     PlayPrefs.hideTokenNames.addListener(_onPrefsChanged);
     PlayPrefs.rotateTapped.addListener(_onPrefsChanged);
+    PlayPrefs.stackVisible.addListener(_onPrefsChanged);
     AppLocale.current.addListener(_onPrefsChanged);
     AppEvents.topVisible.addListener(_onPrefsChanged);
     AppEvents.activeProfile.addListener(_onProfileChanged);
@@ -582,14 +592,52 @@ class _PlayPageState extends State<PlayPage> {
   final _friendsApi = OnlineFriends();
   String _fbUid = '';
   String _lastPresenceKey = '';
+  // Amigos + presença para "Salas dos amigos" (entrar com 1 toque).
+  List<OnlineFriend> _fbRoomFriends = [];
+  StreamSubscription? _fbRoomFrSub;
+  final Map<String, Map<String, dynamic>> _fbRoomPresence = {};
+  final Map<String, StreamSubscription> _fbRoomPresSubs = {};
+  // Stream cacheado: recriar a cada build recancelava a escuta e a
+  // caixa piscava / perdia eventos. Como o onValue do Firebase é
+  // single-subscription, converte para broadcast UMA vez na criação:
+  // remounts (troca de Card, rebuilds do leave) reescutam sem o
+  // "Stream has already been listened to".
+  Stream<List<RoomInvite>>? _inviteStream;
 
   Future<void> _initPresence() async {
     try {
       final uid = await _friendsApi.myUid;
       if (!mounted) return;
-      setState(() => _fbUid = uid);
+      setState(() {
+        _fbUid = uid;
+        _inviteStream ??=
+            _friendsApi.watchRoomInvites(uid).asBroadcastStream();
+      });
       _refreshPresenceRoom();
+      _fbRoomFrSub?.cancel();
+      _fbRoomFrSub = _friendsApi.watchFriends(uid).listen((friends) {
+        if (!mounted) return;
+        setState(() => _fbRoomFriends = friends);
+        _syncRoomPresenceSubs();
+      });
     } catch (_) {}
+  }
+
+  void _syncRoomPresenceSubs() {
+    final want = {for (final f in _fbRoomFriends) f.uid};
+    for (final uid in _fbRoomPresSubs.keys.toList()) {
+      if (!want.contains(uid)) {
+        _fbRoomPresSubs.remove(uid)?.cancel();
+        _fbRoomPresence.remove(uid);
+      }
+    }
+    for (final uid in want) {
+      if (uid.isEmpty || _fbRoomPresSubs.containsKey(uid)) continue;
+      _fbRoomPresSubs[uid] = _friendsApi.watchPresence(uid).listen((p) {
+        if (!mounted) return;
+        setState(() => _fbRoomPresence[uid] = p);
+      });
+    }
   }
 
   /// Presença (Disponível/Jogando) da identidade padrão. Só escreve
@@ -644,6 +692,7 @@ class _PlayPageState extends State<PlayPage> {
 
     PlayPrefs.hideTokenNames.removeListener(_onPrefsChanged);
     PlayPrefs.rotateTapped.removeListener(_onPrefsChanged);
+    PlayPrefs.stackVisible.removeListener(_onPrefsChanged);
     AppLocale.current.removeListener(_onPrefsChanged);
     AppEvents.topVisible.removeListener(_onPrefsChanged);
     AppEvents.activeProfile.removeListener(_onProfileChanged);
@@ -651,6 +700,12 @@ class _PlayPageState extends State<PlayPage> {
     if (LanPresence.instance.onInvite == _onLanInvite) {
       LanPresence.instance.onInvite = null;
     }
+
+    _fbRoomFrSub?.cancel();
+    for (final s in _fbRoomPresSubs.values) {
+      s.cancel();
+    }
+    _fbRoomPresSubs.clear();
 
     for (final s in _sessions.values) {
       s.roomSub?.cancel();
@@ -1672,8 +1727,13 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Banner quando a rede caiu mas a partida salva existe:
   /// host reabre, guest reconecta com o IP salvo. Vale pros dois lados.
+  /// O ✕ dispensa (só volta numa NOVA queda, com outro IP).
   Widget _reconnectBanner() {
     final savedIp = _joinIp.text.trim();
+    if (savedIp.isNotEmpty &&
+        _dismissedReconnect == 'lan:$savedIp') {
+      return const SizedBox.shrink();
+    }
     final amHost = _amLanHost ||
         (_lanHostName.isEmpty && _hostIps.isNotEmpty) ||
         (_myName.trim().isNotEmpty &&
@@ -1701,6 +1761,16 @@ class _PlayPageState extends State<PlayPage> {
                       AppLocale.t('lan_lost'),
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: MaterialLocalizations.of(context)
+                        .closeButtonTooltip,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                        minWidth: 32, minHeight: 32),
+                    onPressed: () => setState(() =>
+                        _dismissedReconnect = 'lan:$savedIp'),
                   ),
                 ],
               ),
@@ -1760,78 +1830,63 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Faixa online no topo da mesa: discreta (`● N online` + ⓘ).
   /// Detalhes (sala, identidade, perfil) ficam no painel de conexão.
+  /// Quando a AppBar está visível, ela mesma mostra ponto + ⓘ —
+  /// a faixa só aparece sem topbar (foco/imersão).
+  /// (O antigo cartão "sala salva + Reconectar" foi removido: ele lia
+  /// a sala ATIVA como se fosse perdida e aparecia até recém-criada.
+  /// Órfã de verdade — app morto, mesa restaurada sem sessão — já cai
+  /// no setup com o código preenchido + botão Reconectar.)
   Widget _onlineNotice() {
     final inRooms = [
       for (final s in _sessions.values)
         if (s.inRoom) s
     ];
-    if (inRooms.isNotEmpty) {
-      final total = {
-        for (final s in inRooms)
-          for (final uid in s.players.keys)
-            if ((s.players[uid]!['connected'] as bool?) ?? true) uid
-      }.length;
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(12, 2, 4, 0),
-        child: Row(
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: _sessionMismatch ? AppTheme.gold : Colors.green,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 6),
-            Text('$total ${AppLocale.t('on_connected_n')}',
-                style:
-                    const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
-            const Spacer(),
-            IconButton(
-              icon: const Icon(Icons.info_outline,
-                  size: 18, color: AppTheme.textMuted),
-              tooltip: AppLocale.t('on_conn_title'),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              onPressed: _connectionSheet,
-            ),
-          ],
-        ),
-      );
+    if (inRooms.isEmpty || !_noTopBar) {
+      return const SizedBox.shrink();
     }
-    final saved = _primaryRoomCode;
-    if (saved.isEmpty) return const SizedBox.shrink();
-    final busy = _sessions.values.any((s) => s.joining);
+    final total = _onlineTotal(inRooms);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-      child: Card(
-        color: const Color(0xFF2A2118),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: AppTheme.gold),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              const Icon(Icons.cloud_off, color: AppTheme.gold, size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('${AppLocale.t('lan_lost')} ($saved)',
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: busy ? null : () => _attachSession('a', saved),
-                icon: const Icon(Icons.refresh, size: 16),
-                label: Text(AppLocale.t('lan_reconnect')),
-              ),
-            ],
+      padding: const EdgeInsets.fromLTRB(12, 2, 4, 0),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: _sessionMismatch ? AppTheme.gold : Colors.green,
+              shape: BoxShape.circle,
+            ),
           ),
-        ),
+          const SizedBox(width: 6),
+          Text('$total ${AppLocale.t('on_connected_n')}',
+              style:
+                  const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+          const Spacer(),
+          IconButton(
+            icon: const Icon(Icons.info_outline,
+                size: 18, color: AppTheme.textMuted),
+            tooltip: AppLocale.t('on_conn_title'),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: _connectionSheet,
+          ),
+        ],
       ),
     );
+  }
+
+  /// UIDs únicos conectados nas salas (para o `● N online`).
+  int _onlineTotal([List<_NetSession>? rooms]) {
+    final inRooms = rooms ??
+        [
+          for (final s in _sessions.values)
+            if (s.inRoom) s
+        ];
+    return {
+      for (final s in inRooms)
+        for (final uid in s.players.keys)
+          if ((s.players[uid]!['connected'] as bool?) ?? true) uid
+    }.length;
   }
 
   int _connectedCount(_NetSession s) =>
@@ -2311,7 +2366,9 @@ class _PlayPageState extends State<PlayPage> {
   Future<void> _startOnlineMatch(_NetSession s) async {
     if (!s.hosting || !s.inRoom || s.net == null) return;
     final entries = _sortedOnlinePlayers(s);
-    if (entries.length < 2) {
+    // Solo liberado: dá para praticar/testar sozinho ou começar e
+    // receber gente depois (late join). Zero jogadores continua fora.
+    if (entries.isEmpty) {
       AppToast.show(context, AppLocale.t('on_need2'));
       return;
     }
@@ -3535,12 +3592,18 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   void _tokenTap(_Token t) {
+    // Aviso rápido: com 10 cartas na mesa, segurar sem feedback deixa
+    // dúvida se virou — o toast confirma na hora (vale p/ host e guest).
+    final msg = AppLocale.t(t.tapped ? 'tok_now_untapped' : 'tok_now_tapped')
+        .replaceAll('{n}', t.name);
     if (_isGuest) {
       _send({'action': 'token_tap', 'id': t.id, 'tapped': !t.tapped});
+      AppToast.show(context, msg);
       return;
     }
     _recordHistory('${t.tapped ? 'Desvirou' : 'Virou'} ${t.name}');
     setState(() => t.tapped = !t.tapped);
+    AppToast.show(context, msg);
     _broadcast();
   }
 
@@ -3804,7 +3867,9 @@ class _PlayPageState extends State<PlayPage> {
                         backgroundColor: _manaDots[c],
                         child: Text(c,
                             style: TextStyle(
-                                color: c == 'W' ? Colors.black87 : Colors.white,
+                                color: _manaDarkText(c)
+                                    ? Colors.black87
+                                    : Colors.white,
                                 fontWeight: FontWeight.bold)),
                       ),
                       const SizedBox(height: 2),
@@ -4030,15 +4095,31 @@ class _PlayPageState extends State<PlayPage> {
                   Text(AppLocale.t('nav_play')),
                   if (_isHost) ...[
                     const SizedBox(width: 8),
-                    _netDot('$_peers online'),
+                    _netDot(
+                        '$_peers ${AppLocale.t('on_connected_n')}'),
                   ],
                   if (_isGuest) ...[
                     const SizedBox(width: 8),
                     _netDot('conectado'),
                   ],
+                  // Online (Firebase): igual ao LAN — ponto na topbar.
+                  if (_isOnline && _onlineTotal() > 0) ...[
+                    const SizedBox(width: 8),
+                    _netDot(
+                        '${_onlineTotal()} ${AppLocale.t('on_connected_n')}'),
+                  ],
                 ],
               ),
               actions: [
+                // Online em sala: ⓘ abre o painel de conexão (sala,
+                // identidade, perfil, jogadores) — igual à faixa.
+                if (_isOnline &&
+                    _sessions.values.any((s) => s.inRoom))
+                  IconButton(
+                    icon: const Icon(Icons.info_outline, size: 20),
+                    tooltip: AppLocale.t('on_conn_title'),
+                    onPressed: _connectionSheet,
+                  ),
                 if (_inMatch)
                   IconButton(
                     icon: const Icon(Icons.palette_outlined),
@@ -4297,24 +4378,24 @@ class _PlayPageState extends State<PlayPage> {
               ],
             ),
             if (_playMode == _PlayMode.local)
-              Row(
-                children: [
-                  Text(AppLocale.t('su_players')),
-                  IconButton(
-                      icon: const Icon(Icons.remove_circle_outline),
-                      onPressed: () => setState(() {
-                            _playerCount = (_playerCount - 1).clamp(2, 6);
-                            _resetNameCtrls();
-                          })),
-                  Text('$_playerCount',
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold)),
-                  IconButton(
-                      icon: const Icon(Icons.add_circle, color: AppTheme.gold),
-                      onPressed: () => setState(() {
-                            _playerCount = (_playerCount + 1).clamp(2, 6);
-                            _resetNameCtrls();
-                          })),
+                Row(
+                  children: [
+                    Text(AppLocale.t('su_players')),
+                    IconButton(
+                        icon: const Icon(Icons.remove_circle_outline),
+                        onPressed: () => setState(() {
+                              _playerCount = (_playerCount - 1).clamp(1, 6);
+                              _resetNameCtrls();
+                            })),
+                    Text('$_playerCount',
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    IconButton(
+                        icon: const Icon(Icons.add_circle, color: AppTheme.gold),
+                        onPressed: () => setState(() {
+                              _playerCount = (_playerCount + 1).clamp(1, 6);
+                              _resetNameCtrls();
+                            })),
                 ],
               ),
           ],
@@ -4539,6 +4620,7 @@ class _PlayPageState extends State<PlayPage> {
                 child: b,
               ),
             _roomInviteInbox(),
+            _friendsRoomsSection(),
             const SizedBox(height: 6),
             if (sessions.isEmpty) ...[
               SizedBox(
@@ -4638,9 +4720,12 @@ class _PlayPageState extends State<PlayPage> {
   /// Convites de sala recebidos (Firebase): entrar consome o convite
   /// e entra com o código; recusar só consome.
   Widget _roomInviteInbox() {
-    if (_fbUid.isEmpty) return const SizedBox.shrink();
+    final stream = _inviteStream;
+    if (_fbUid.isEmpty || stream == null) {
+      return const SizedBox.shrink();
+    }
     return StreamBuilder<List<RoomInvite>>(
-      stream: _friendsApi.watchRoomInvites(_fbUid),
+      stream: stream,
       builder: (_, snap) {
         final invites = (snap.data ?? [])
             .where((i) => i.roomCode.trim().isNotEmpty)
@@ -4690,6 +4775,61 @@ class _PlayPageState extends State<PlayPage> {
           ],
         );
       },
+    );
+  }
+
+  /// Salas onde os amigos estão AGORA (presença): entrar com 1 toque,
+  /// sem digitar código e sem esperar convite.
+  Widget _friendsRoomsSection() {
+    if (_fbUid.isEmpty) return const SizedBox.shrink();
+    final inRoom = <OnlineFriend, String>{};
+    for (final f in _fbRoomFriends) {
+      final pres = _fbRoomPresence[f.uid];
+      final online = (pres?['online'] as bool?) ?? false;
+      final room = (pres?['room'] ?? '').toString().trim().toUpperCase();
+      if (online && room.isNotEmpty) inRoom[f] = room;
+    }
+    if (inRoom.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(AppLocale.t('fr_rooms'),
+              style: const TextStyle(
+                  fontWeight: FontWeight.bold, fontSize: 13)),
+        ),
+        for (final e in inRoom.entries)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                      color: Colors.green, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                      '${e.key.name} • ${AppLocale.t('on_room')}: ${e.value}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12)),
+                ),
+                const SizedBox(width: 6),
+                TextButton(
+                  onPressed: () async {
+                    setState(() => _joinCodeCtrl.text = e.value);
+                    await _joinOnlineRoom();
+                  },
+                  child: Text(AppLocale.t('fr_enter')),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 
@@ -4860,7 +5000,7 @@ class _PlayPageState extends State<PlayPage> {
             if (s.hosting)
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: (s.joining || count < 2)
+                  onPressed: (s.joining || count < 1)
                       ? null
                       : () => _startOnlineMatch(s),
                   icon: const Icon(Icons.play_arrow, size: 16),
@@ -4899,14 +5039,19 @@ class _PlayPageState extends State<PlayPage> {
     );
   }
 
-  /// Checklist de amigos (desta sessão/UID) para convidar à sala.
+  /// Checklist de amigos para convidar à sala. Usa SEMPRE a identidade
+  /// padrão (_fbUid/_friendsApi, onde moram amizades, presença e caixa
+  /// de entrada) — a auth da sessão varia por slot (UIDs secundários
+  /// sem amigos) e o convite se perdia.
   Future<void> _inviteFriendsSheet(_NetSession s) async {
     if (s.net == null || !s.inRoom) return;
-    final api = OnlineFriends(auth: s.net!.auth, database: s.net!.database);
-    var myUid = '';
-    try {
-      myUid = await api.myUid;
-    } catch (_) {}
+    final api = _friendsApi;
+    var myUid = _fbUid;
+    if (myUid.isEmpty) {
+      try {
+        myUid = await api.myUid;
+      } catch (_) {}
+    }
     if (!mounted) return;
     final selected = <String>{};
     await showModalBottomSheet<void>(
@@ -4979,9 +5124,14 @@ class _PlayPageState extends State<PlayPage> {
                                       Navigator.pop(ctx);
                                       for (final uid in targets) {
                                         try {
+                                          final fromName = s.displayName
+                                                  .trim()
+                                                  .isNotEmpty
+                                              ? s.displayName.trim()
+                                              : _profileName.trim();
                                           await api.sendRoomInvite(
                                             toUid: uid,
-                                            fromName: s.displayName,
+                                            fromName: fromName,
                                             roomCode: s.roomCode,
                                           );
                                         } catch (_) {}
@@ -5176,7 +5326,21 @@ class _PlayPageState extends State<PlayPage> {
       ].join('|');
       (groups[key] ??= []).add(t);
     }
-    return [for (final list in groups.values) _TokenStack(list)];
+    final out = [for (final list in groups.values) _TokenStack(list)];
+    // Ordem estável por menor id (criação): virar/desvirar muda a chave
+    // do grupo, mas a pilha NÃO pula de lugar na fileira.
+    out.sort((a, b) {
+      var minA = a.tokens.first.id;
+      for (final t in a.tokens) {
+        if (t.id < minA) minA = t.id;
+      }
+      var minB = b.tokens.first.id;
+      for (final t in b.tokens) {
+        if (t.id < minB) minB = t.id;
+      }
+      return minA.compareTo(minB);
+    });
+    return out;
   }
 
   bool get _isSharedPhoneDuel =>
@@ -5355,35 +5519,89 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   /// Linha da mesa: vez/rodada, desfazer, histórico e foco.
+  /// Faixa da mesa (vez, desfazer, histórico, foco): igual à faixa
+  /// central do modo Local — mesmo Container, pílula de turno, dados
+  /// e moeda. Vale para online e LAN.
   Widget _matchToolbar() {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(12, _noTopBar ? 4 : 8, 12, 4),
+    final canPass = _canPassTurn();
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppTheme.sidebar,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _tableStyle.accent.withValues(alpha: 0.45)),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 2)),
+        ],
+      ),
       child: Row(
         children: [
+          IconButton(
+            icon: const Icon(Icons.casino, size: 20),
+            tooltip: AppLocale.t('su_dice20'),
+            color: AppTheme.textMuted,
+            onPressed: () => _roll('D20', 20),
+          ),
+          IconButton(
+            icon: const Icon(Icons.toll, size: 20),
+            tooltip: AppLocale.t('su_coin'),
+            color: AppTheme.textMuted,
+            onPressed: _flipCoin,
+          ),
           Expanded(
-            child: TextButton.icon(
-              onPressed: _canPassTurn() ? _nextTurn : null,
-              icon: const Icon(Icons.skip_next, size: 16),
-              label: Text(
-                  _players.isEmpty
-                      ? '${AppLocale.t('play_round')} $_round'
-                      : '${AppLocale.t('play_turn')}: ${_players[_active.clamp(0, _players.length - 1)].name} • R$_round',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
+            child: GestureDetector(
+              onTap: canPass ? _nextTurn : null,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: [
+                    _tableStyle.accent.withValues(alpha: 0.28),
+                    _tableStyle.accent.withValues(alpha: 0.12),
+                  ]),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: _tableStyle.accent.withValues(alpha: 0.6)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.skip_next,
+                        size: 18, color: _tableStyle.accent),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        _players.isEmpty
+                            ? '${AppLocale.t('play_round')} $_round'
+                            : '${AppLocale.t('play_turn')}: ${_players[_active.clamp(0, _players.length - 1)].name} • R$_round',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.undo),
+            icon: const Icon(Icons.undo, size: 20),
             tooltip: AppLocale.t('play_undo'),
             onPressed: _history.isNotEmpty || _isGuest ? _undo : null,
           ),
           IconButton(
-            icon: const Icon(Icons.history),
+            icon: const Icon(Icons.history, size: 20),
             tooltip: AppLocale.t('play_history'),
             onPressed: _showHistory,
           ),
           IconButton(
-            icon: Icon(_focusMode ? Icons.fullscreen_exit : Icons.fullscreen),
+            icon: Icon(_focusMode ? Icons.fullscreen_exit : Icons.fullscreen,
+                size: 20),
             tooltip: _focusMode
                 ? AppLocale.t('play_exit_focus')
                 : AppLocale.t('play_focus'),
@@ -6180,7 +6398,9 @@ class _PlayPageState extends State<PlayPage> {
                       style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
-                          color: c == 'W' ? Colors.black87 : Colors.white)),
+                          color: _manaDarkText(c)
+                              ? Colors.black87
+                              : Colors.white)),
                 ),
               ),
             ),
@@ -6423,10 +6643,15 @@ class _PlayPageState extends State<PlayPage> {
 
   void _tapMany(List<_Token> targets, bool tapped) {
     if (targets.isEmpty) return;
+    final msg = AppLocale.t(
+            tapped ? 'tok_many_tapped' : 'tok_many_untapped')
+        .replaceAll('{q}', '${targets.length}')
+        .replaceAll('{n}', targets.first.name);
     if (_isGuest) {
       for (final o in targets) {
         _send({'action': 'token_tap', 'id': o.id, 'tapped': tapped});
       }
+      AppToast.show(context, msg);
       return;
     }
     _recordHistory(
@@ -6436,6 +6661,7 @@ class _PlayPageState extends State<PlayPage> {
         o.tapped = tapped;
       }
     });
+    AppToast.show(context, msg);
     _broadcast();
   }
 
@@ -7412,52 +7638,106 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Uma pilha ocupa o espaço de uma carta. As bordas deslocadas atrás da
   /// carta principal deixam claro que há várias cópias, sem poluir a mesa.
+  /// Virada mantém o tamanho paisagem (h×w) mas centralizada
+  /// verticalmente no slot — antes ficava grudada no topo. Empilhada
+  /// ou não, o centro vertical fica fixo.
   Widget _tokenStackMini(_TokenStack stack,
       {double w = 110, double h = 154, bool upsideDown = false}) {
-    // No máximo três cartas visíveis: a frente e duas cópias atrás.
-    final layers = (stack.count - 1).clamp(0, 2);
+    // Quantas cartas visíveis: a frente + cópias atrás, até o máximo
+    // dos Ajustes (1 = só a frente).
+    final layers =
+        (stack.count - 1).clamp(0, PlayPrefs.stackVisible.value - 1);
     final lead = stack.lead;
     // Virada de verdade: a carta gira 90º (ocupa h×w em vez de w×h).
     final rot = lead.tapped && PlayPrefs.rotateTapped.value;
     final fw = rot ? h : w;
     final fh = rot ? w : h;
-    return SizedBox(
-      width: fw + layers * 7.0 + 8,
-      height: fh + layers * 6.0,
-      child: Stack(
-        children: [
-          for (var layer = layers; layer > 0; layer--)
-            Positioned(
-              left: layer * 7.0,
-              top: layer * 6.0,
-              width: fw,
-              height: fh,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Stack(fit: StackFit.expand, children: [
-                  if (lead.art.isNotEmpty)
-                    CachedNetworkImage(
-                        imageUrl: lead.art,
-                        fit: BoxFit.cover,
-                        memCacheWidth: (w * 2).toInt())
-                  else
-                    Container(
-                        color: lead.tapped
-                            ? AppTheme.goldSoft
-                            : _tableStyle.panel),
-                  Container(color: Colors.black.withValues(alpha: 0.18)),
-                ]),
-              ),
-            ),
+    // Cascata: reta desce pouco (6px) e abre 5px de lado; virada abre
+    // 16px abaixo (26px descia demais) com a da frente no topo e as
+    // outras à mostra. Laterais justas, sem vão grande.
+    final offD = rot ? 10.0 : 0.0;
+    final offL = rot ? 0.0 : 10.0;
+    final innerH = fh + layers * offD;
+    final body = Stack(
+      children: [
+        for (var layer = layers; layer > 0; layer--)
           Positioned(
-            left: 0,
-            top: 0,
+            left: layer * offL,
+            top: layer * offD,
             width: fw,
             height: fh,
-            child: _tokenMini(lead,
-                w: w, h: h, stackedCount: stack.count, upsideDown: upsideDown),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              // Virada: as de trás giram junto com a da frente.
+              child: rot
+                  ? RotatedBox(
+                      quarterTurns: 1,
+                      child: SizedBox(
+                        width: w,
+                        height: h,
+                        child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (lead.art.isNotEmpty)
+                                CachedNetworkImage(
+                                    imageUrl: lead.art,
+                                    fit: BoxFit.cover,
+                                    memCacheWidth: (w * 2).toInt())
+                              else
+                                Container(
+                                    color: AppTheme.goldSoft),
+                              Container(
+                                  color: Colors.black
+                                      .withValues(alpha: 0.18)),
+                            ]),
+                      ),
+                    )
+                  : Stack(fit: StackFit.expand, children: [
+                      if (lead.art.isNotEmpty)
+                        CachedNetworkImage(
+                            imageUrl: lead.art,
+                            fit: BoxFit.cover,
+                            memCacheWidth: (w * 2).toInt())
+                      else
+                        Container(
+                            color: lead.tapped
+                                ? AppTheme.goldSoft
+                                : _tableStyle.panel),
+                      Container(
+                          color: Colors.black.withValues(alpha: 0.18)),
+                    ]),
+            ),
           ),
-        ],
+        Positioned(
+          left: 0,
+          top: 0,
+          width: fw,
+          height: fh,
+          child: _tokenMini(lead,
+              w: w,
+              h: h,
+              stackedCount: stack.count,
+              upsideDown: upsideDown),
+        ),
+      ],
+    );
+    // Reta: layout original intocado. Virada: centraliza verticalmente
+    // no slot para não grudar no topo.
+    if (!rot) {
+      return SizedBox(
+        width: fw + layers * offL + 4,
+        height: fh + layers * 6.0,
+        child: body,
+      );
+    }
+    return SizedBox(
+      width: fw + layers * offL + 4,
+      height: h + layers * 6.0,
+      // Viés leve para cima (centro com -0.2): a virada respira em
+      // cima sem mudar nenhum tamanho.
+      child: Align(
+        alignment: const Alignment(-1.0, -0.2),
+        child: SizedBox(width: fw, height: innerH, child: body),
       ),
     );
   }
@@ -7621,7 +7901,8 @@ class _PlayPageState extends State<PlayPage> {
         ]),
       ),
     );
-    // Virada ocupa h×w com o conteúdo girado 90º dentro.
+    // Virada ocupa h×w com o conteúdo girado 90º dentro
+    // (tamanho paisagem correto, como antes).
     final body = realRotate ? RotatedBox(quarterTurns: 1, child: inner) : inner;
     return SizedBox(
       width: realRotate ? h : w,
