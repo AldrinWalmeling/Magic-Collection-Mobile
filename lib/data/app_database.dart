@@ -72,7 +72,7 @@ class AppDatabase {
 
       fullPath,
 
-      version: 6,
+      version: 7,
 
       onCreate: _onCreateDb,
 
@@ -94,6 +94,8 @@ class AppDatabase {
 
     await _createSocial(db);
 
+    await _createCustom(db);
+
   }
 
   static Future<void> _onUpgradeDb(Database db, int oldV, int newV) async {
@@ -109,6 +111,8 @@ class AppDatabase {
     await _createProfiles(db);
 
     await _createSocial(db);
+
+    await _createCustom(db);
 
     for (final col in _cardExtraColumns) {
 
@@ -172,7 +176,7 @@ class AppDatabase {
 
       m,
 
-      version: 6,
+      version: 7,
 
       onCreate: _onCreateDb,
 
@@ -394,9 +398,40 @@ class AppDatabase {
 
   }
 
-  static Future<void> _createSnapshots(DatabaseExecutor db) async {
+  /// Modelos de cartas/fichas personalizadas (v7): salvos no Play
+  /// para reutilizar sem redigitar (nome, P/T, custo, tipo,
+  /// habilidades em JSON, descrição e arte).
+  static Future<void> _createCustom(DatabaseExecutor db) async {
 
     await db.execute('''
+
+      CREATE TABLE IF NOT EXISTS custom_templates (
+
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+        name TEXT NOT NULL,
+
+        power INTEGER NOT NULL DEFAULT 1,
+
+        toughness INTEGER NOT NULL DEFAULT 1,
+
+        cost TEXT NOT NULL DEFAULT '',
+
+        type TEXT NOT NULL DEFAULT '',
+
+        keywords TEXT NOT NULL DEFAULT '[]',
+
+        description TEXT NOT NULL DEFAULT '',
+
+        art TEXT NOT NULL DEFAULT '',
+
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+      )''');
+
+  }
+
+  static Future<void> _createSnapshots(DatabaseExecutor db) async {    await db.execute('''
 
       CREATE TABLE IF NOT EXISTS collection_snapshots (
 

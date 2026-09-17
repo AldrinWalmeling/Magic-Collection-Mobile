@@ -444,27 +444,6 @@ class _PhotoModePageState extends State<PhotoModePage>
     return false;
   }
 
-  /// Extrai o nº do coletor quando o OCR o lê em linha separada
-  /// (uso avulso; o fluxo principal usa geometria em [_capture]).
-  /// Preserva o formato completo "266/177" (nunca só "266").
-  static String _extractCollector(List<String> cands) {
-    for (final c in cands) {
-      final full =
-          RegExp(r'(\d+[a-zA-Z]?)\s*/\s*(\d+[a-zA-Z]?)').firstMatch(c);
-      if (full != null) {
-        return ScryfallService.ocrFixCollectorNumber(
-            '${full.group(1)!.trim()}/${full.group(2)!.trim()}');
-      }
-    }
-    for (final c in cands) {
-      final lone = RegExp(r'#\s*(\d+[a-zA-Z]?)').firstMatch(c);
-      if (lone != null) {
-        return ScryfallService.ocrFixCollectorNumber(lone.group(1)!.trim());
-      }
-    }
-    return '';
-  }
-
   /// Nomes dos terrenos básicos em vários idiomas (normalizados,
   /// sem acento) -> nome oráculo em inglês.
   static const _basicNames = {
@@ -1169,6 +1148,10 @@ class _PhotoModePageState extends State<PhotoModePage>
           child: IgnorePointer(
             child: Center(
               child: Container(
+                constraints: BoxConstraints(
+                  maxWidth:
+                      MediaQuery.of(context).size.width - 120,
+                ),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
@@ -1179,6 +1162,9 @@ class _PhotoModePageState extends State<PhotoModePage>
                   _phase == _Phase.processing
                       ? _status
                       : AppLocale.t('pm_focus_hint'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white),
                 ),
               ),

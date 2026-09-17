@@ -155,7 +155,8 @@ class LanGuest {
   void Function(String text)? onFlash;
   void Function()? onDisconnect;
 
-  Future<void> connect(String ip, String name) async {
+  Future<void> connect(String ip, String name,
+      {String theme = '', String bg = ''}) async {
     await disconnect();
     final entered = ip.trim();
     // Aceita tanto "192.168.0.10" quanto o endereço completo exibido
@@ -169,7 +170,7 @@ class LanGuest {
     }
     _socket =
         await Socket.connect(host, port, timeout: const Duration(seconds: 5));
-    send({'type': 'hello', 'name': name});
+    send({'type': 'hello', 'name': name, 'theme': theme, 'bg': bg});
     var buf = '';
     _socket!.listen(
       (data) {

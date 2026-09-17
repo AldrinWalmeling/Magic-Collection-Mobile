@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../services/app_events.dart';
 import '../services/app_locale.dart';
+import '../services/deck_availability.dart';
 import '../data/app_database.dart';
 import '../theme/app_theme.dart';
 import 'deck_detail_page.dart';
@@ -71,6 +72,9 @@ class _DecksPageState extends State<DecksPage> {
     setState(() => _loading = true);
     final db = AppDatabase.instance.db;
     final decks = await db.query('decks', orderBy: 'favorite DESC, name ASC');
+    // Índice da coleção uma vez (disponibilidade de todos os decks).
+    final byOracle = await DeckAvailabilityService.ownedByOracle(db);
+    final byName = await DeckAvailabilityService.ownedByName(db);
     final out = <Map<String, Object?>>[];
     for (final d in decks) {
       final stats = await db.rawQuery('''
@@ -78,6 +82,12 @@ class _DecksPageState extends State<DecksPage> {
                COALESCE(SUM(dc.quantity * COALESCE(c.price_usd, c.price_ref_usd, 0)),0) AS v
         FROM deck_cards dc JOIN cards c ON c.id = dc.card_id
         WHERE dc.deck_id = ?''', [d['id']]);
+      final items = await db.rawQuery('''
+        SELECT c.*, dc.quantity AS deck_qty
+        FROM deck_cards dc JOIN cards c ON c.id = dc.card_id
+        WHERE dc.deck_id = ?''', [d['id']]);
+      final avail =
+          DeckAvailabilityService.compute(items, byOracle, byName);
       // Capa escolhida; sem escolha, usa a carta mais presente no deck.
       final cover = await db.rawQuery('''
         SELECT c.image_url, c.name
@@ -89,6 +99,8 @@ class _DecksPageState extends State<DecksPage> {
       out.add({
         ...d,
         ...stats.first,
+        'av_owned': avail.totalOwned,
+        'av_need': avail.totalNeed,
         if (cover.isNotEmpty) 'cover_url': cover.first['image_url'],
         if (cover.isNotEmpty) 'cover_name': cover.first['name'],
       });
@@ -112,6 +124,7 @@ class _DecksPageState extends State<DecksPage> {
     final result = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
+        scrollable: true,
         title: Text(title),
         content: TextField(controller: c, autofocus: true),
         actions: [
@@ -172,6 +185,10 @@ class _DecksPageState extends State<DecksPage> {
                         final coverUrl = (d['cover_url'] ?? '').toString();
                         final count = (d['n'] as num?)?.toInt() ?? 0;
                         final price = (d['v'] as num?)?.toDouble() ?? 0;
+                        final avOwned =
+                            (d['av_owned'] as num?)?.toInt() ?? 0;
+                        final avNeed =
+                            (d['av_need'] as num?)?.toInt() ?? 0;
                         return Card(
                           clipBehavior: Clip.antiAlias,
                           child: InkWell(
@@ -232,9 +249,14 @@ class _DecksPageState extends State<DecksPage> {
                                                 fontWeight: FontWeight.bold)),
                                         const Spacer(),
                                         Text(
-                                            '$count ${AppLocale.t('deck_cards_suffix')} • ${price.toStringAsFixed(2)} USD',
-                                            style: const TextStyle(
-                                                color: AppTheme.textMuted)),
+                                            '$count ${AppLocale.t('deck_cards_suffix')} • $avOwned/$avNeed • ${price.toStringAsFixed(2)} USD',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                                color: avNeed > 0 &&
+                                                        avOwned < avNeed
+                                                    ? Colors.orange
+                                                    : AppTheme.textMuted)),
                                       ],
                                     ),
                                   ),

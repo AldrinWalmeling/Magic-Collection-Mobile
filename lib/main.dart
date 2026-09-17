@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
 
@@ -79,6 +80,8 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _index = 0;
   bool _checkingProfile = true;
+  // Última aba aberta: volta para ela se o SO matar o app em 2º plano.
+  static const _lastTabKey = 'app_last_tab';
 
   static const _pages = [
     DashboardPage(),
@@ -92,7 +95,24 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    _restoreTab();
     _checkProfile();
+  }
+
+  Future<void> _restoreTab() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final i = prefs.getInt(_lastTabKey) ?? 0;
+      if (!mounted) return;
+      if (i >= 0 && i < _pages.length) setState(() => _index = i);
+    } catch (_) {}
+  }
+
+  Future<void> _saveTab(int i) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_lastTabKey, i);
+    } catch (_) {}
   }
 
   Future<void> _checkProfile() async {
@@ -140,6 +160,7 @@ class _AppShellState extends State<AppShell> {
           }
 
           return AlertDialog(
+            scrollable: true,
             title: Text(AppLocale.t('setup_title')),
             content: Column(mainAxisSize: MainAxisSize.min, children: [
               Text(AppLocale.t('setup_sub')),
@@ -210,6 +231,7 @@ class _AppShellState extends State<AppShell> {
               // Trocar de aba atualiza o Painel sozinho.
               onDestinationSelected: (i) {
                 setState(() => _index = i);
+                _saveTab(i);
                 AppEvents.notifyCollectionChanged();
               },
               destinations: [

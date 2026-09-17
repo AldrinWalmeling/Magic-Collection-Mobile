@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -19,7 +20,11 @@ import '../services/lan_presence.dart';
 import '../services/online_match.dart';
 import '../services/scryfall_service.dart';
 import '../theme/app_theme.dart';
+import '../theme/table_backgrounds.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/marquee.dart';
+import '../widgets/mtg_symbols.dart';
+import 'ocr_scan_page.dart';
 
 // Aba JOGAR — mesa local + mesa em rede Wi-Fi (sem internet).
 // - Formatos (Livre/Padrão/Commander...), 2–6 jogadores, veneno,
@@ -34,24 +39,99 @@ import '../widgets/app_toast.dart';
 // — fora desta fase. O modelo já está em JSON pronto p/ plugar.
 
 class _MatchPlayer {
+  static const poisonLethal = 10;
+  static const commanderLethal = 21;
   String name;
   int life;
   int poison;
+  // Dano de comandante por NOME do comandante (21+ do mesmo = morte).
+  Map<String, int> commander;
+  // Contadores extras do jogador (Energia, Experiência...): nome -> qtd.
+  Map<String, int> counters;
   // UID Firebase da sessão dona (online). '' = local/LAN/legado.
   // Identidade real; [name] é só exibição.
   String uid;
+  // Tema da mesa deste jogador (chave de _tableStyles, '' = global).
+  String theme;
+  // Fundo da mesa deste jogador (id de tableBackgrounds, '' = sólido).
+  String bg;
   _MatchPlayer(
-      {required this.name, required this.life, this.poison = 0, this.uid = ''});
-  bool get alive => life > 0;
+      {required this.name,
+      required this.life,
+      this.poison = 0,
+      Map<String, int>? commander,
+      Map<String, int>? counters,
+      this.uid = '',
+      this.theme = '',
+      this.bg = ''})
+      : commander = commander ?? {},
+        counters = counters ?? {};
 
-  Map<String, dynamic> toJson() =>
-      {'name': name, 'life': life, 'poison': poison, 'uid': uid};
+  /// Maior dano de um único comandante (o que vale p/ a morte).
+  int get commanderMax {
+    var m = 0;
+    for (final v in commander.values) {
+      if (v > m) m = v;
+    }
+    return m;
+  }
+
+  bool get commanderDead => commanderMax >= commanderLethal;
+  bool get poisonDead => poison >= poisonLethal;
+  bool get alive => life > 0 && !poisonDead && !commanderDead;
+
+  /// Causa da morte para o anúncio (life/poison/commander).
+  String get deathCause {
+    if (commanderDead) return 'commander';
+    if (poisonDead) return 'poison';
+    return 'life';
+  }
+
+  /// Nome do comandante que matou (maior dano >= 21), '' se nenhum.
+  String get killerCommander {
+    var best = '';
+    var bestV = commanderLethal;
+    commander.forEach((k, v) {
+      if (v >= bestV) {
+        bestV = v;
+        best = k;
+      }
+    });
+    return best;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'life': life,
+        'poison': poison,
+        'commander': Map<String, int>.from(commander),
+        'counters': Map<String, int>.from(counters),
+        'uid': uid,
+        'theme': theme,
+        'bg': bg,
+      };
+
+  static Map<String, int> _intMapFrom(Object? raw) {
+    final out = <String, int>{};
+    if (raw is Map) {
+      raw.forEach((k, v) {
+        final key = k.toString().trim();
+        if (key.isEmpty) return;
+        out[key] = (v as num?)?.toInt() ?? 0;
+      });
+    }
+    return out;
+  }
 
   static _MatchPlayer fromJson(Map<String, dynamic> m) => _MatchPlayer(
         name: (m['name'] ?? '?').toString(),
         life: (m['life'] as num?)?.toInt() ?? 20,
         poison: (m['poison'] as num?)?.toInt() ?? 0,
+        commander: _intMapFrom(m['commander']),
+        counters: _intMapFrom(m['counters']),
         uid: (m['uid'] ?? '').toString(),
+        theme: (m['theme'] ?? '').toString(),
+        bg: (m['bg'] ?? '').toString(),
       );
 }
 
@@ -99,6 +179,12 @@ class _Token {
   String ownerUid;
   String description;
   String art;
+  // Carta personalizada: custo de mana (texto, ex. "{2}{G}" ou "X"),
+  // linha de tipo (ex. "Criatura — Elfo") e habilidades por chave
+  // (ex. 'flying', 'lifelink'). ''/vazio = ficha simples.
+  String cost;
+  String type;
+  List<String> keywords;
   // Pode ser nulo após hot reload em fichas já existentes na memória.
   bool? hideName;
   _Token({
@@ -118,8 +204,12 @@ class _Token {
     this.ownerUid = '',
     this.description = '',
     this.art = '',
+    this.cost = '',
+    this.type = '',
+    List<String>? keywords,
     this.hideName = false,
-  }) : marks = marks ?? [];
+  })  : marks = marks ?? [],
+        keywords = keywords ?? [];
 
   /// Ficha utilitária (Tesouro, Pista...) tem habilidade ativada.
   bool get isUtility => power == 0 && toughness == 0;
@@ -148,8 +238,38 @@ class _Token {
         'ownerUid': ownerUid,
         'description': description,
         'art': art,
+        'cost': cost,
+        'type': type,
+        'keywords': [...keywords],
         'hideName': hideName == true,
       };
+
+  /// Habilidades de carta personalizada (chaves canônicas em inglês;
+  /// o rótulo localizado sai de `ab_<chave>` no AppLocale).
+  static const abilityKeys = [
+    'flying',
+    'vigilance',
+    'lifelink',
+    'deathtouch',
+    'haste',
+    'trample',
+    'menace',
+    'reach',
+    'first_strike',
+    'double_strike',
+    'hexproof',
+    'indestructible',
+  ];
+
+  static List<String> _keywordsFrom(Object? raw) {
+    if (raw is! List) return [];
+    return [
+      for (final e in raw)
+        if (e.toString().trim().isNotEmpty &&
+            abilityKeys.contains(e.toString().trim()))
+          e.toString().trim()
+    ];
+  }
 
   static List<_Mark> _marksFrom(Object? raw) {
     if (raw is! List) return [];
@@ -176,6 +296,9 @@ class _Token {
         ownerUid: (m['ownerUid'] ?? '').toString(),
         description: (m['description'] ?? '').toString(),
         art: (m['art'] ?? '').toString(),
+        cost: (m['cost'] ?? '').toString(),
+        type: (m['type'] ?? '').toString(),
+        keywords: _keywordsFrom(m['keywords']),
         hideName: (m['hideName'] as bool?) ?? false,
       );
 }
@@ -214,6 +337,50 @@ class _TokenEffect {
         toughness: (m['toughness'] as num?)?.toInt() ?? 0,
         targetId: (m['targetId'] as num?)?.toInt() ?? -1,
         untilEOT: (m['untilEOT'] as bool?) ?? false,
+      );
+}
+
+/// Marcador separado: quase uma carta — tem nome, contador e um
+/// "dentro" (fichas vinculadas). [memberIds] vazio = GLOBAL (vale para
+/// a mesa toda); com ids, afeta SÓ aquelas fichas. Sincroniza como
+/// efeito (estado + ações marker_*).
+/// [kind]: 'custom' (contador próprio, só informativo), 'plus'
+/// (carimba +1/+1 nas fichas de dentro) ou 'minus' (−1/−1).
+class _Marker {
+  static const kinds = ['custom', 'plus', 'minus'];
+  int id;
+  String label;
+  int count;
+  List<int> memberIds;
+  String kind;
+  _Marker({
+    required this.id,
+    required this.label,
+    this.count = 0,
+    List<int>? memberIds,
+    String? kind,
+  })  : memberIds = memberIds ?? [],
+        kind = kinds.contains(kind) ? kind! : 'custom';
+
+  bool get isGlobal => memberIds.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'label': label,
+        'count': count,
+        'memberIds': [...memberIds],
+        'kind': kind,
+      };
+
+  static _Marker fromJson(Map<String, dynamic> m) => _Marker(
+        id: (m['id'] as num?)?.toInt() ?? 0,
+        label: (m['label'] ?? '').toString(),
+        count: (m['count'] as num?)?.toInt() ?? 0,
+        memberIds: [
+          for (final e in (m['memberIds'] as List? ?? const []))
+            (e as num?)?.toInt() ?? -1
+        ]..removeWhere((v) => v < 0),
+        kind: (m['kind'] ?? 'custom').toString(),
       );
 }
 
@@ -289,7 +456,7 @@ class PlayPage extends StatefulWidget {
   State<PlayPage> createState() => _PlayPageState();
 }
 
-class _PlayPageState extends State<PlayPage> {
+class _PlayPageState extends State<PlayPage> with WidgetsBindingObserver {
   static const _formats = {
     'livre': ('fmt_livre', 20),
     'standard': ('fmt_standard', 20),
@@ -311,15 +478,26 @@ class _PlayPageState extends State<PlayPage> {
   _PlayMode _playMode = _PlayMode.local;
   bool _focusMode = false;
   String _tableTheme = 'midnight';
+  // Fundo da MINHA mesa no LAN/Online (id do registry; '' = sólido).
+  // No local cada jogador tem o seu (_playerBgs).
+  String _myTableBg = '';
   String _format = 'livre';
   int _playerCount = 2;
   int _startLife = 20;
   List<TextEditingController> _nameCtrls = [];
+  // Lado de cada jogador no multi local (true = topo, false = base).
+  // Padrão: P1 e P2 embaixo, resto em cima (3p = 2+1, 4p = 2+2).
+  List<bool> _playerSides = [];
+  // Tema e fundo por jogador no setup ('' = global / sólido).
+  List<String> _playerThemes = [];
+  List<String> _playerBgs = [];
   List<Map<String, Object?>> _friends = [];
 
   List<_MatchPlayer> _players = [];
   List<_Token> _tokens = [];
   List<_TokenEffect> _effects = [];
+  // Marcadores separados da mesa (globais ou por ficha).
+  List<_Marker> _markers = [];
   // Pool de mana por jogador: nome -> {W,U,B,R,G,C} -> qtd.
   // (mana "extra" p/ Tesouros e boca-livre; esvazia no reset.)
   Map<String, Map<String, int>> _mana = {};
@@ -327,6 +505,7 @@ class _PlayPageState extends State<PlayPage> {
   int _active = 0;
   int _tokenSeq = 1;
   int _effectSeq = 1;
+  int _markerSeq = 1;
   final _rand = Random();
   // Nome "eu" neste aparelho (p/ "você morreu/venceu" e mana própria).
   String _myName = '';
@@ -337,6 +516,8 @@ class _PlayPageState extends State<PlayPage> {
   int _tokensCols = 2;
   // Oponente selecionado na mesa deles (3+ jogadores).
   int _oppSel = 0;
+  // Jogador exibido no detalhe da Arena (índice em _players).
+  int _arenaSel = 0;
   final List<_MatchSnapshot> _history = [];
   List<String> _activity = [];
   static const _savedMatchKey = 'play_match_v1';
@@ -364,9 +545,279 @@ class _PlayPageState extends State<PlayPage> {
         Color(0xFFC994FF)),
     'ember': _TableStyle(
         'su_th_ember', Color(0xFF2B1817), Color(0xFF402523), Color(0xFFFF9A62)),
+    'ocean': _TableStyle('su_th_ocean', Color(0xFF0B1D29), Color(0xFF14324A),
+        Color(0xFF4FC3F7)),
+    'blood': _TableStyle('su_th_blood', Color(0xFF230F14), Color(0xFF3A151C),
+        Color(0xFFFF5252)),
   };
   _TableStyle get _tableStyle =>
       _tableStyles[_tableTheme] ?? _tableStyles['midnight']!;
+
+  // ===== AJUSTE FINO DA MESA (tamanhos em px — mexa aqui) =====
+  // Duelo 1x1 local (duas metades, uma de ponta-cabeça).
+  static const double _duelNameH = 30; // linha nome + botão add
+  static const double _duelLifeH = 72; // painel de vida (era 96: agora sobra
+  static const double _duelLifeHCompact = 54; // p/ a vida na paisagem apertada
+  static const double _duelCompactH = 240; // zona menor que isso encolhe tudo
+  // Cartas na mesa: altura segue o espaço livre até o teto; largura =
+  // altura × _tokenAspect (proporção da carta).
+  static const double _tokenAspect = 0.72;
+  static const double _tokenMaxH = 210; // teto duelo/local
+  static const double _tokenMaxW = 150;
+  static const double _tokenMinH = 44; // abaixo disso some em vez de estourar
+  // Arena (online/LAN): a faixa aproveita o resto da zona até o teto.
+  static const double _arenaStripMaxH = 180; // era 132
+  static const double _arenaCompactH = 180; // abaixo disso rola compacto
+
+  /// Amostra das 3 cores do tema (fundo, painel, destaque) num círculo
+  /// só — cabe no slot de avatar dos chips (3 bolinhas estouravam).
+  static Widget _themeSwatch(_TableStyle s, {double r = 8}) {
+    return Container(
+      width: r * 2,
+      height: r * 2,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: SweepGradient(
+          colors: [s.background, s.panel, s.accent, s.background],
+        ),
+        border: Border.all(color: Colors.black54),
+      ),
+    );
+  }
+
+  /// Miniatura do fundo atual (ou ícone) para os botões de escolha.
+  Widget _bgThumb(String id, {double w = 28, double h = 20}) {
+    TableBackground? found;
+    for (final b in tableBackgrounds) {
+      if (b.id == id) {
+        found = b;
+        break;
+      }
+    }
+    if (found == null) {
+      return const Icon(Icons.image_outlined,
+          size: 18, color: AppTheme.textMuted);
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Image.asset(found.asset,
+          width: w,
+          height: h,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+              size: 18, color: AppTheme.textMuted)),
+    );
+  }
+
+  /// Sheet visual de fundos: grade com prévia de como fica a mesa.
+  /// Primeiro item = sem imagem. Devolve o id escolhido ou null.
+  Future<void> _bgPickerSheet(
+      {required String current,
+      required ValueChanged<String> onPick}) async {
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(AppLocale.t('su_bg'),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15)),
+              const SizedBox(height: 8),
+              Flexible(
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    childAspectRatio: 2.2,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                  ),
+                  itemCount: tableBackgrounds.length + 1,
+                  itemBuilder: (_, k) {
+                    if (k == 0) {
+                      final sel = current.isEmpty;
+                      return GestureDetector(
+                        onTap: () => Navigator.pop(ctx, ''),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: sel
+                                    ? AppTheme.gold
+                                    : AppTheme.border,
+                                width: sel ? 2 : 1),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.hide_image_outlined,
+                                  size: 20,
+                                  color: sel
+                                      ? AppTheme.gold
+                                      : AppTheme.textMuted),
+                              const SizedBox(height: 2),
+                              Text(AppLocale.t('su_bg_none'),
+                                  style:
+                                      const TextStyle(fontSize: 11)),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
+                    final b = tableBackgrounds[k - 1];
+                    final sel = current == b.id;
+                    return GestureDetector(
+                      onTap: () => Navigator.pop(ctx, b.id),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color:
+                                  sel ? AppTheme.gold : AppTheme.border,
+                              width: sel ? 2 : 1),
+                          image: DecorationImage(
+                              image: AssetImage(b.asset),
+                              fit: BoxFit.cover),
+                        ),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            gradient: const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.transparent,
+                                Color(0xB3000000),
+                              ],
+                              stops: [0.0, 0.45, 1.0],
+                            ),
+                          ),
+                          alignment: Alignment.bottomLeft,
+                          padding: const EdgeInsets.all(6),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(b.label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        shadows: [
+                                          Shadow(
+                                              color: Colors.black,
+                                              blurRadius: 4)
+                                        ])),
+                              ),
+                              if (sel)
+                                const Icon(Icons.check_circle,
+                                    size: 16, color: AppTheme.gold),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (pick != null) onPick(pick);
+  }
+
+  /// Tema da mesa de um jogador (o dele; '' = global). Vale no local,
+  /// e no online mostra o tema QUE O OPONENTE escolheu (vem no estado).
+  _TableStyle _styleFor(_MatchPlayer p) =>
+      _tableStyles[p.theme] ?? _tableStyle;
+
+  /// Fundo de mesa de um jogador (id do registry; null = sólido).
+  TableBackground? _bgFor(_MatchPlayer p) {
+    final id = p.bg.trim();
+    if (id.isEmpty) return null;
+    for (final b in tableBackgrounds) {
+      if (b.id == id) return b;
+    }
+    return null;
+  }
+
+  /// Moldura de zona com o tema + fundo do jogador: imagem de fundo
+  /// (se escolhida) com vinheta suave nos cantos — degrade escuro só
+  /// nas bordas para a imagem não ficar chapada e o texto continuar
+  /// legível. Sem imagem, painel sólido do tema. Borda de turno igual.
+  Widget _zoneFrame({
+    required _MatchPlayer p,
+    required bool isActive,
+    required Widget child,
+    EdgeInsetsGeometry padding = const EdgeInsets.all(6),
+  }) {
+    final st = _styleFor(p);
+    final bg = _bgFor(p);
+    final side = BorderSide(
+        color: isActive ? st.accent : AppTheme.border,
+        width: isActive ? 2 : 1);
+    if (bg == null) {
+      return Card(
+        margin: EdgeInsets.zero,
+        color: st.panel,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12), side: side),
+        child: Padding(padding: padding, child: child),
+      );
+    }
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12), side: side),
+      child: Stack(
+        children: [
+          // Fundo + vinheta SÓ no fundo: o degrade escurece as bordas
+          // da imagem e nunca o conteúdo (textos/cartas) por cima.
+          // Se o asset falhar (APK sem o arquivo, id antigo), cai para
+          // o painel sólido em vez de quebrar a zona.
+          Positioned.fill(
+            child: Container(
+              color: st.panel,
+              child: Image.asset(
+                bg.asset,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) =>
+                    Container(color: st.panel),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment.center,
+                  radius: 0.75,
+                  colors: [
+                    Colors.transparent,
+                    Colors.transparent,
+                    Color(0x8C000000),
+                  ],
+                  stops: [0.0, 0.55, 1.0],
+                ),
+              ),
+            ),
+          ),
+          Padding(padding: padding, child: child),
+        ],
+      ),
+    );
+  }
 
   // ---- rede local ----
   LanHost? _host;
@@ -571,13 +1022,17 @@ class _PlayPageState extends State<PlayPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _resetNameCtrls();
     _loadFriends();
+    _loadArtCache();
     _restoreSavedMatch();
     _loadProfileIdentity();
     PlayPrefs.hideTokenNames.addListener(_onPrefsChanged);
     PlayPrefs.rotateTapped.addListener(_onPrefsChanged);
     PlayPrefs.stackVisible.addListener(_onPrefsChanged);
+    PlayPrefs.keywordPos.addListener(_onPrefsChanged);
+    PlayPrefs.tableFormat.addListener(_onPrefsChanged);
     AppLocale.current.addListener(_onPrefsChanged);
     AppEvents.topVisible.addListener(_onPrefsChanged);
     AppEvents.activeProfile.addListener(_onProfileChanged);
@@ -603,16 +1058,15 @@ class _PlayPageState extends State<PlayPage> {
   // remounts (troca de Card, rebuilds do leave) reescutam sem o
   // "Stream has already been listened to".
   Stream<List<RoomInvite>>? _inviteStream;
+  // UID vigiado pelo _inviteStream (troca com re-login/novo anônimo).
+  String _inviteUid = '';
 
   Future<void> _initPresence() async {
     try {
       final uid = await _friendsApi.myUid;
       if (!mounted) return;
-      setState(() {
-        _fbUid = uid;
-        _inviteStream ??=
-            _friendsApi.watchRoomInvites(uid).asBroadcastStream();
-      });
+      setState(() => _fbUid = uid);
+      _watchInvites(uid);
       _refreshPresenceRoom();
       _fbRoomFrSub?.cancel();
       _fbRoomFrSub = _friendsApi.watchFriends(uid).listen((friends) {
@@ -621,6 +1075,18 @@ class _PlayPageState extends State<PlayPage> {
         _syncRoomPresenceSubs();
       });
     } catch (_) {}
+  }
+
+  /// (Re)assina os convites de sala: troca de UID, volta do 2º plano
+  /// (o socket do Firebase pode cochilar) ou toque no atualizar.
+  /// Recriar o stream força um `onValue` imediato — o convite aparece
+  /// sozinho, sem precisar "mexer na tela".
+  void _watchInvites(String uid, {bool force = false}) {
+    if (uid.isEmpty) return;
+    if (!force && uid == _inviteUid && _inviteStream != null) return;
+    _inviteUid = uid;
+    _inviteStream = _friendsApi.watchRoomInvites(uid).asBroadcastStream();
+    if (mounted) setState(() {});
   }
 
   void _syncRoomPresenceSubs() {
@@ -687,12 +1153,15 @@ class _PlayPageState extends State<PlayPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (_focusMode) AppEvents.navVisible.value = true;
     AppEvents.playFocusActive.value = false;
 
     PlayPrefs.hideTokenNames.removeListener(_onPrefsChanged);
     PlayPrefs.rotateTapped.removeListener(_onPrefsChanged);
     PlayPrefs.stackVisible.removeListener(_onPrefsChanged);
+    PlayPrefs.keywordPos.removeListener(_onPrefsChanged);
+    PlayPrefs.tableFormat.removeListener(_onPrefsChanged);
     AppLocale.current.removeListener(_onPrefsChanged);
     AppEvents.topVisible.removeListener(_onPrefsChanged);
     AppEvents.activeProfile.removeListener(_onProfileChanged);
@@ -745,15 +1214,30 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   void _resetNameCtrls() {
+    // Preserva o que já foi digitado/escolhido nos índices mantidos —
+    // trocar a contagem não apaga mais nomes, lados, temas e fundos.
+    final oldNames = [for (final c in _nameCtrls) c.text];
+    final oldSides = List<bool>.of(_playerSides);
+    final oldThemes = List<String>.of(_playerThemes);
+    final oldBgs = List<String>.of(_playerBgs);
     for (final c in _nameCtrls) {
       c.dispose();
     }
-    _nameCtrls = List.generate(
-        _playerCount,
-        (i) => TextEditingController(
-            text: i == 0
-                ? AppLocale.t('su_you')
-                : '${AppLocale.t('su_player')} ${i + 1}'));
+    _nameCtrls = List.generate(_playerCount, (i) {
+      final kept = i < oldNames.length ? oldNames[i].trim() : '';
+      return TextEditingController(
+          text: kept.isNotEmpty
+              ? kept
+              : (i == 0
+                  ? AppLocale.t('su_you')
+                  : '${AppLocale.t('su_player')} ${i + 1}'));
+    });
+    _playerSides = List.generate(_playerCount,
+        (i) => i < oldSides.length ? oldSides[i] : i >= 2);
+    _playerThemes = List.generate(
+        _playerCount, (i) => i < oldThemes.length ? oldThemes[i] : '');
+    _playerBgs = List.generate(
+        _playerCount, (i) => i < oldBgs.length ? oldBgs[i] : '');
   }
 
   Future<void> _loadFriends() async {
@@ -787,6 +1271,31 @@ class _PlayPageState extends State<PlayPage> {
     }
   }
 
+  /// App foi para 2º plano (home/outro app): garante a partida salva
+  /// NA HORA — se o SO matar o processo, a volta restaura tudo
+  /// (aba + mesa) em vez de "resetar". Vale por 7 dias.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _persistMatch();
+    } else if (state == AppLifecycleState.resumed) {
+      // Volta do 2º plano: garante socket vivo e reassina convites —
+      // sem isso o convite só aparecia mexendo na tela. O UID pode
+      // ter mudado (re-login), então reconfere antes.
+      try {
+        OnlineMatch.defaultDatabase().goOnline();
+      } catch (_) {}
+      _friendsApi.myUid.then((uid) {
+        if (!mounted) return;
+        if (uid.isNotEmpty && uid != _fbUid) {
+          setState(() => _fbUid = uid);
+        }
+        if (_fbUid.isNotEmpty) _watchInvites(_fbUid, force: true);
+      }).catchError((_) {});
+    }
+  }
+
   Future<void> _restoreSavedMatch() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -794,6 +1303,13 @@ class _PlayPageState extends State<PlayPage> {
       if (raw == null || raw.isEmpty) return;
       final saved = Map<String, dynamic>.from(jsonDecode(raw));
       if (!mounted || saved['players'] is! List) return;
+      // Tempo limite: save com mais de 7 dias é descartado (mesa velha).
+      final when = DateTime.tryParse((saved['savedAt'] ?? '').toString());
+      if (when != null &&
+          DateTime.now().difference(when) > const Duration(days: 7)) {
+        await _clearSavedMatch();
+        return;
+      }
       _applyState(saved);
       setState(() => _myName = (saved['myName'] ?? '').toString());
       if (mounted) {
@@ -814,8 +1330,12 @@ class _PlayPageState extends State<PlayPage> {
       }
       await prefs.setString(
           key,
-          jsonEncode(
-              {..._matchToJson(), 'myName': _myName, 'activity': _activity}));
+          jsonEncode({
+            ..._matchToJson(),
+            'myName': _myName,
+            'activity': _activity,
+            'savedAt': DateTime.now().toIso8601String(),
+          }));
     } catch (_) {}
   }
 
@@ -905,6 +1425,7 @@ class _PlayPageState extends State<PlayPage> {
         'players': [for (final p in _players) p.toJson()],
         'tokens': [for (final t in _tokens) t.toJson()],
         'effects': [for (final e in _effects) e.toJson()],
+        'markers': [for (final mk in _markers) mk.toJson()],
         'mana': {
           for (final entry in _mana.entries)
             entry.key: Map<String, int>.from(entry.value)
@@ -950,6 +1471,7 @@ class _PlayPageState extends State<PlayPage> {
       _players = list(m['players'], _MatchPlayer.fromJson);
       _tokens = list(m['tokens'], _Token.fromJson);
       _effects = list(m['effects'], _TokenEffect.fromJson);
+      _markers = list(m['markers'], _Marker.fromJson);
       _activity = [
         for (final e in (m['activity'] as List? ?? const [])) e.toString()
       ];
@@ -977,6 +1499,11 @@ class _PlayPageState extends State<PlayPage> {
         if (e.id >= maxE) maxE = e.id + 1;
       }
       _effectSeq = maxE == 0 ? 1 : maxE;
+      var maxM = 0;
+      for (final mk in _markers) {
+        if (mk.id >= maxM) maxM = mk.id + 1;
+      }
+      _markerSeq = maxM == 0 ? 1 : maxM;
     });
     if (wasInMatch) {
       _checkDeaths();
@@ -985,7 +1512,7 @@ class _PlayPageState extends State<PlayPage> {
       _deadAnnounced.clear();
       _winsAnnounced.clear();
       for (final p in _players) {
-        if (p.life <= 0) _deadAnnounced.add(p.name);
+        if (!p.alive) _deadAnnounced.add(p.name);
       }
     }
   }
@@ -1090,6 +1617,13 @@ class _PlayPageState extends State<PlayPage> {
       _absorbLateJoiners(s, room);
     }
 
+    // Host realinha o visual (tema/fundo/uid) da mesa com o cadastro da
+    // sala: quem trocou o visual pelo nó, ou entrou antes da mesa, passa
+    // a exibir certo para TODOS (era comum só o bg do host aparecer).
+    if (s.hosting && s.inRoom && _inMatch && _isOnline) {
+      _syncRosterVisuals(s);
+    }
+
     if (room.isStarted && !_inMatch && _playMode == _PlayMode.online) {
       // Guest entra quando o host começa (o state já foi aplicado).
       if (mounted && _players.isNotEmpty) {
@@ -1120,7 +1654,13 @@ class _PlayPageState extends State<PlayPage> {
           (p.uid.isNotEmpty && p.uid == e.key) ||
           p.name.trim().toLowerCase() == name.toLowerCase());
       if (known) continue;
-      _players.add(_MatchPlayer(name: name, life: _startLife, uid: e.key));
+      _players.add(_MatchPlayer(
+        name: name,
+        life: _startLife,
+        uid: e.key,
+        theme: (e.value['theme'] ?? '').toString(),
+        bg: (e.value['bg'] ?? '').toString(),
+      ));
       _activity = ['$name entrou na partida', ..._activity].take(20).toList();
       added = true;
       if (mounted) {
@@ -1143,6 +1683,50 @@ class _PlayPageState extends State<PlayPage> {
     _applyState(state);
   }
 
+  /// Realinha tema/fundo/uid de cada jogador da mesa com o nó
+  /// players/<uid> da sala (fonte do visual no join). Só republica se
+  /// algo realmente mudou — sem loop com o próprio publish.
+  void _syncRosterVisuals(_NetSession s) {
+    var changed = false;
+    for (final p in _players) {
+      Map<String, dynamic>? node;
+      if (p.uid.isNotEmpty && s.players[p.uid] != null) {
+        node = s.players[p.uid];
+      } else {
+        final key = p.name.trim().toLowerCase();
+        if (key.isEmpty) continue;
+        for (final e in s.players.entries) {
+          if ((e.value['name'] ?? '').toString().trim().toLowerCase() ==
+              key) {
+            node = e.value;
+            if (p.uid.isEmpty) {
+              p.uid = e.key;
+              changed = true;
+            }
+            break;
+          }
+        }
+      }
+      if (node == null) continue;
+      final theme = (node['theme'] ?? '').toString();
+      final bg = (node['bg'] ?? '').toString();
+      final okTheme = theme.isEmpty || _tableStyles.containsKey(theme);
+      final okBg = bg.isEmpty || tableBackgrounds.any((b) => b.id == bg);
+      if (okTheme && p.theme != theme) {
+        p.theme = theme;
+        changed = true;
+      }
+      if (okBg && p.bg != bg) {
+        p.bg = bg;
+        changed = true;
+      }
+    }
+    if (changed) {
+      if (mounted) setState(() {});
+      _broadcast();
+    }
+  }
+
   Future<void> _onSessionKicked(_NetSession s) async {
     await _teardownSession(s);
     if (!mounted) return;
@@ -1161,16 +1745,17 @@ class _PlayPageState extends State<PlayPage> {
     if (!s.hosting || !s.inRoom) return;
 
     final actionId = action['actionId']?.toString();
-    if (actionId == null || actionId.isEmpty) return;
-
-    // A ação veio de outro jogador (qualquer UID que não seja o meu).
+    final kind = action['action']?.toString() ?? '?';
     final fromUid = action['fromUid']?.toString() ?? '';
-    final myUid = s.myUid ?? '';
-
-    if (fromUid.isNotEmpty && fromUid == myUid) {
+    if (actionId == null || actionId.isEmpty) {
+      debugPrint('[Net] host ignora ação sem id ($kind)');
       return;
     }
-
+    final myUid = s.myUid ?? '';
+    if (fromUid.isNotEmpty && fromUid == myUid) {
+      return; // eco próprio
+    }
+    debugPrint('[Net] host aplica $kind de $fromUid');
     _applyAction(action);
 
     s.net?.consumeAction(actionId);
@@ -1240,6 +1825,8 @@ class _PlayPageState extends State<PlayPage> {
     switch (kind) {
       case 'life':
       case 'poison':
+      case 'commander':
+      case 'counter':
         final i = (action['player'] as num?)?.toInt();
         if (i != null && i >= 0 && i < _players.length) {
           return _players[i].name;
@@ -1259,6 +1846,9 @@ class _PlayPageState extends State<PlayPage> {
         return _ownerOfToken((action['id'] as num?)?.toInt());
       case 'mana_add':
         return (action['player'] ?? '').toString();
+      case 'visual':
+        // Visual da mesa de um jogador: roteia pela sessão dele.
+        return (action['player'] ?? '').toString();
       case 'effect_add':
         final eff = action['effect'];
         if (eff is Map) {
@@ -1273,6 +1863,11 @@ class _PlayPageState extends State<PlayPage> {
           }
         }
         return null;
+      case 'marker_add':
+      case 'marker_set':
+      case 'marker_remove':
+        // Marcador é da mesa: roteia pela sessão do dono declarado.
+        return (action['player'] ?? '').toString();
       case 'next_turn':
         if (_players.isEmpty) return null;
         return _players[_active.clamp(0, _players.length - 1)].name;
@@ -1318,10 +1913,14 @@ class _PlayPageState extends State<PlayPage> {
       return;
     }
     try {
+      debugPrint(
+          '[Net] envia ${action['action']} via ${s.slot} (${s.roomCode})');
       await s.net!.sendAction({...action, 'from': s.displayName});
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[Net] FALHA ao enviar ${action['action']}: $e');
       if (mounted) {
-        AppToast.show(context, AppLocale.t('on_fail_send'));
+        AppToast.show(
+            context, AppLocale.t('on_fail').replaceAll('{e}', '$e'));
       }
     }
   }
@@ -1360,9 +1959,16 @@ class _PlayPageState extends State<PlayPage> {
       setState(() {
         _myName = hostName.isEmpty ? AppLocale.t('su_host_name') : hostName;
         _lanHostName = _myName;
-        _players = [_MatchPlayer(name: _myName, life: _startLife)];
+        _players = [
+          _MatchPlayer(
+              name: _myName,
+              life: _startLife,
+              theme: _tableTheme,
+              bg: _myTableBg)
+        ];
         _tokens = [];
         _effects = [];
+        _markers = [];
         _mana.clear();
         _activity = ['Mesa criada por $_myName'];
         _history.clear();
@@ -1452,12 +2058,30 @@ class _PlayPageState extends State<PlayPage> {
     if (msg['type'] == 'hello') {
       final name = (msg['name'] ?? AppLocale.t('su_guest')).toString().trim();
       if (name.isEmpty) return;
+      final theme = (msg['theme'] ?? '').toString();
+      final bg = (msg['bg'] ?? '').toString();
       final exists = _players.any((p) => p.name == name);
       if (!exists && _players.length < 6) {
         _recordHistory('$name entrou na mesa');
-        setState(
-            () => _players.add(_MatchPlayer(name: name, life: _startLife)));
+        setState(() => _players.add(_MatchPlayer(
+              name: name,
+              life: _startLife,
+              theme: _tableStyles.containsKey(theme) ? theme : '',
+              bg: tableBackgrounds.any((b) => b.id == bg) ? bg : '',
+            )));
         AppToast.show(context, '$name entrou na mesa');
+      } else if (exists) {
+        // Reconexão: atualiza o visual (tema/fundo) que ele mandou —
+        // senão o bg dos outros nunca aparece para ninguém.
+        setState(() {
+          for (final p in _players) {
+            if (p.name != name) continue;
+            if (_tableStyles.containsKey(theme)) p.theme = theme;
+            if (bg.isEmpty || tableBackgrounds.any((b) => b.id == bg)) {
+              p.bg = bg;
+            }
+          }
+        });
       } else if (!exists) {
         AppToast.show(context, 'A mesa já está cheia (máximo de 6).');
       }
@@ -1504,6 +2128,29 @@ class _PlayPageState extends State<PlayPage> {
           setState(() => _players[i].poison =
               (_players[i].poison + ((a['delta'] as num?)?.toInt() ?? 0))
                   .clamp(0, 99));
+        }
+        break;
+      case 'commander':
+        final i = idx((a['player'] as num?)?.toInt(), _players.length);
+        final src = (a['from'] ?? '?').toString().trim();
+        if (i >= 0 && src.isNotEmpty) {
+          setState(() {
+            final cur = _players[i].commander[src] ?? 0;
+            _players[i].commander[src] =
+                (cur + ((a['delta'] as num?)?.toInt() ?? 0)).clamp(0, 99);
+          });
+        }
+        break;
+      case 'counter':
+        final i = idx((a['player'] as num?)?.toInt(), _players.length);
+        final key = (a['key'] ?? '').toString().trim();
+        if (i >= 0 && key.isNotEmpty) {
+          setState(() {
+            _players[i].counters[key] =
+                ((_players[i].counters[key] ?? 0) +
+                        ((a['delta'] as num?)?.toInt() ?? 0))
+                    .clamp(-99, 99);
+          });
         }
         break;
       case 'token_add':
@@ -1602,6 +2249,15 @@ class _PlayPageState extends State<PlayPage> {
               if (a['marks'] is List) {
                 t.marks = _Token._marksFrom(a['marks']);
               }
+              if (a['cost'] != null) {
+                t.cost = a['cost'].toString();
+              }
+              if (a['type'] != null) {
+                t.type = a['type'].toString();
+              }
+              if (a['keywords'] is List) {
+                t.keywords = _Token._keywordsFrom(a['keywords']);
+              }
               if (a['hideName'] != null) {
                 t.hideName = (a['hideName'] as bool?) ?? false;
               }
@@ -1621,6 +2277,50 @@ class _PlayPageState extends State<PlayPage> {
         final id = (a['id'] as num?)?.toInt() ?? -1;
         setState(() => _effects.removeWhere((e) => e.id == id));
         break;
+      case 'marker_add':
+        final m = a['marker'];
+        if (m is Map) {
+          final mk = _Marker.fromJson(Map<String, dynamic>.from(m));
+          mk.id = _markerSeq++;
+          // Membros que não existem mais (ficha removida) caem fora.
+          mk.memberIds =
+              mk.memberIds.where((id) => _tokens.any((t) => t.id == id)).toList();
+          setState(() => _markers.add(mk));
+        }
+        break;
+      case 'marker_set':
+        final id = (a['id'] as num?)?.toInt() ?? -1;
+        setState(() {
+          for (final mk in _markers) {
+            if (mk.id != id) continue;
+            if (a['label'] != null) {
+              final label = a['label'].toString().trim();
+              if (label.isNotEmpty) mk.label = label;
+            }
+            if (a['count'] != null) {
+              mk.count = ((a['count'] as num).toInt()).clamp(-99, 99);
+            }
+            if (a['memberIds'] is List) {
+              mk.memberIds = [
+                for (final e in (a['memberIds'] as List))
+                  (e as num?)?.toInt() ?? -1
+              ]
+                  .where((mid) =>
+                      mid >= 0 && _tokens.any((t) => t.id == mid))
+                  .toList();
+            }
+          }
+          // Faxina geral: sem ficha, sem vínculo.
+          for (final mk in _markers) {
+            mk.memberIds =
+                mk.memberIds.where((mid) => _tokens.any((t) => t.id == mid)).toList();
+          }
+        });
+        break;
+      case 'marker_remove':
+        final id = (a['id'] as num?)?.toInt() ?? -1;
+        setState(() => _markers.removeWhere((mk) => mk.id == id));
+        break;
       case 'mana_add':
         _addManaRaw((a['player'] ?? '').toString(),
             (a['color'] ?? 'C').toString(), (a['delta'] as num?)?.toInt() ?? 0);
@@ -1628,6 +2328,40 @@ class _PlayPageState extends State<PlayPage> {
         break;
       case 'mana_clear':
         setState(() => _mana.clear());
+        break;
+      case 'visual':
+        // Troca o visual (tema/fundo) da mesa de UM jogador. O alvo é o
+        // remetente: online resolve pelo fromUid, LAN pelo nome (from).
+        // Valores fora do catálogo são ignorados — nunca quebram a mesa.
+        final theme = (a['theme'] ?? '').toString();
+        final bg = (a['bg'] ?? '').toString();
+        if (!_tableStyles.containsKey(theme) && theme.isNotEmpty) break;
+        if (bg.isNotEmpty &&
+            !tableBackgrounds.any((b) => b.id == bg)) break;
+        final fromUid = (a['fromUid'] ?? '').toString();
+        final fromName = (a['from'] ?? a['player'] ?? '').toString();
+        _MatchPlayer? target;
+        for (final p in _players) {
+          if (fromUid.isNotEmpty && p.uid.isNotEmpty && p.uid == fromUid) {
+            target = p;
+            break;
+          }
+        }
+        target ??= (() {
+          final key = fromName.trim().toLowerCase();
+          if (key.isEmpty) return null;
+          for (final p in _players) {
+            if (p.name.trim().toLowerCase() == key) return p;
+          }
+          return null;
+        })();
+        final resolved = target;
+        if (resolved != null) {
+          setState(() {
+            resolved.theme = theme;
+            resolved.bg = bg;
+          });
+        }
         break;
       case 'activate_utility':
         final id = (a['id'] as num?)?.toInt() ?? -1;
@@ -1653,6 +2387,9 @@ class _PlayPageState extends State<PlayPage> {
         _doReset(broadcast: false);
         break;
     }
+    // Mortes causadas pelo guest também anunciam (antes só a autoridade
+    // local checava: veneno/comandante do oponente passavam batidos).
+    _checkDeaths();
     _broadcast();
   }
 
@@ -1663,6 +2400,10 @@ class _PlayPageState extends State<PlayPage> {
         return 'Vida ${delta >= 0 ? '+' : ''}$delta';
       case 'poison':
         return 'Veneno ${delta >= 0 ? '+' : ''}$delta';
+      case 'commander':
+        return 'Dano de comandante ${delta >= 0 ? '+' : ''}$delta';
+      case 'counter':
+        return 'Marcador de jogador';
       case 'token_add':
         return 'Adicionou ficha';
       case 'token_remove':
@@ -1677,6 +2418,14 @@ class _PlayPageState extends State<PlayPage> {
         return 'Resolveu ficha';
       case 'next_turn':
         return 'Passou o turno';
+      case 'marker_add':
+        return 'Criou marcador';
+      case 'marker_set':
+        return 'Ajustou marcador';
+      case 'marker_remove':
+        return 'Removeu marcador';
+      case 'visual':
+        return 'Trocou o visual da mesa';
       case 'reset':
         return 'Reiniciou marcadores';
       default:
@@ -2001,8 +2750,10 @@ class _PlayPageState extends State<PlayPage> {
           child: SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: () {
+              onPressed: () async {
                 Navigator.pop(context);
+                final go = await _confirmLeaveMatch(session: s);
+                if (go != true || !mounted) return;
                 _leaveSession(s);
               },
               icon: const Icon(Icons.logout, size: 16),
@@ -2019,6 +2770,7 @@ class _PlayPageState extends State<PlayPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true,
         title: Text(AppLocale.t('su_ip_title')),
         content: TextField(
           controller: ctrl,
@@ -2092,7 +2844,8 @@ class _PlayPageState extends State<PlayPage> {
           : (_myName.trim().isNotEmpty
               ? _myName.trim()
               : AppLocale.t('su_guest'));
-      await guest.connect(ip, myName);
+      await guest.connect(ip, myName,
+          theme: _tableTheme, bg: _myTableBg);
       setState(() {
         _guest = guest;
         _joining = false;
@@ -2179,10 +2932,18 @@ class _PlayPageState extends State<PlayPage> {
         'round': 1,
         'active': 0,
         'players': [
-          {'name': hostName, 'life': _startLife, 'poison': 0}
+          {
+            'name': hostName,
+            'life': _startLife,
+            'poison': 0,
+            'uid': '',
+            'theme': _tableTheme,
+            'bg': _myTableBg,
+          }
         ],
         'tokens': [],
         'effects': [],
+        'markers': [],
         'mana': {},
         'activity': ['Mesa criada por $hostName'],
       };
@@ -2246,6 +3007,8 @@ class _PlayPageState extends State<PlayPage> {
         format: _format,
         startLife: _startLife,
         tableTheme: _tableTheme,
+        playerTheme: _tableTheme,
+        playerBg: _myTableBg,
         initialState: _freshOnlineState(me, ''),
       );
       if (!mounted) return;
@@ -2259,9 +3022,17 @@ class _PlayPageState extends State<PlayPage> {
         _myName = me;
         _profileName = me;
         _joinCodeCtrl.text = info.roomId;
-        _players = [_MatchPlayer(name: me, life: _startLife)];
+        _players = [
+          _MatchPlayer(
+              name: me,
+              life: _startLife,
+              uid: s.myUid ?? '',
+              theme: _tableTheme,
+              bg: _myTableBg)
+        ];
         _tokens = [];
         _effects = [];
+        _markers = [];
         _mana.clear();
         _round = 1;
         _active = 0;
@@ -2334,7 +3105,11 @@ class _PlayPageState extends State<PlayPage> {
       final net = await _netFor(s);
       final profile = (await AppDatabase.instance.activeProfileName()).trim();
       final me = profile.isEmpty ? AppLocale.t('su_guest') : profile;
-      final info = await net.joinRoom(roomCode: code, playerName: me);
+      final info = await net.joinRoom(
+          roomCode: code,
+          playerName: me,
+          playerTheme: _tableTheme,
+          playerBg: _myTableBg);
       if (!mounted) return;
       setState(() {
         _playMode = _PlayMode.online;
@@ -2381,13 +3156,19 @@ class _PlayPageState extends State<PlayPage> {
       return;
     }
     if (!mounted) return;
+    final myName = _myName.trim().toLowerCase();
+    final meIdx = entries.indexWhere((e) =>
+        _localUids.contains(e.key) ||
+        (e.value['name'] ?? '').toString().trim().toLowerCase() == myName);
     setState(() {
       _players = [
         for (final e in entries)
           _MatchPlayer(
               name: (e.value['name'] ?? '?').toString(),
               life: _startLife,
-              uid: e.key)
+              uid: e.key,
+              theme: (e.value['theme'] ?? '').toString(),
+              bg: (e.value['bg'] ?? '').toString())
       ];
       _tokens = [];
       _effects = [];
@@ -2396,6 +3177,7 @@ class _PlayPageState extends State<PlayPage> {
       _winsAnnounced.clear();
       _round = 1;
       _active = 0;
+      _arenaSel = meIdx >= 0 ? meIdx : 0;
       _activity = ['Partida online iniciada'];
       _history.clear();
       _inMatch = true;
@@ -2508,8 +3290,7 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Sai de UMA sessão (as outras continuam). Host apaga a sala junto.
   Future<void> _leaveSession(_NetSession s) async {
-    await _teardownSession(s, deleteIfHost: true);
-    if (!mounted) return;
+    await _teardownSession(s, deleteIfHost: true);    if (!mounted) return;
     if (mounted) setState(() {});
     await _persistSessions();
   }
@@ -2650,10 +3431,35 @@ class _PlayPageState extends State<PlayPage> {
     for (var i = 0; i < names.length; i++) {
       if (names[i].isEmpty) names[i] = '${AppLocale.t('su_player')} ${i + 1}';
     }
+    // Mesa local limpa: derruba qualquer resto de rede (host/guest/
+    // sessões de outro modo). Estado obsoleto travava o turno local
+    // (_canPassTurn lia _host/_peers fantasmas).
+    try {
+      _host?.stop();
+    } catch (_) {}
+    _host = null;
+    _hosting = false;
+    try {
+      _guest?.disconnect();
+    } catch (_) {}
+    _guest = null;
+    for (final s in _sessions.values) {
+      s.roomSub?.cancel();
+      s.actionSub?.cancel();
+    }
+    _sessions.clear();
+    _peers = 0;
     setState(() {
       _myName = names.first;
-      _players =
-          names.map((n) => _MatchPlayer(name: n, life: _startLife)).toList();
+      _players = [
+        for (var i = 0; i < names.length; i++)
+          _MatchPlayer(
+            name: names[i],
+            life: _startLife,
+            theme: i < _playerThemes.length ? _playerThemes[i] : '',
+            bg: i < _playerBgs.length ? _playerBgs[i] : '',
+          ),
+      ];
       _tokens = [];
       _effects = [];
       _mana.clear();
@@ -2661,6 +3467,7 @@ class _PlayPageState extends State<PlayPage> {
       _winsAnnounced.clear();
       _round = 1;
       _active = 0;
+      _arenaSel = 0;
       _inMatch = true;
       _activity = ['Partida local iniciada'];
       _history.clear();
@@ -2689,6 +3496,62 @@ class _PlayPageState extends State<PlayPage> {
     setState(() {
       _players[i].poison = (_players[i].poison + delta).clamp(0, 99);
     });
+    _broadcast();
+    _checkDeaths();
+  }
+
+  /// Dano de comandante: [from] é o NOME do comandante/dono que bateu
+  /// (21+ do mesmo = morte, regra 704.5v). Vale em qualquer formato.
+  void _bumpCommander(int i, String from, int delta) {
+    if (i < 0 || i >= _players.length) return;
+    final src = from.trim().isEmpty ? '?' : from.trim();
+    if (_isGuest) {
+      _send({'action': 'commander', 'player': i, 'from': src, 'delta': delta});
+      return;
+    }
+    _recordHistory(
+        '${_players[i].name}: comandante $src ${delta >= 0 ? '+' : ''}$delta');
+    setState(() {
+      final cur = _players[i].commander[src] ?? 0;
+      _players[i].commander[src] = (cur + delta).clamp(0, 99);
+    });
+    _broadcast();
+    _checkDeaths();
+  }
+
+  /// Contador extra do jogador (Energia, Experiência...). [delta] soma;
+  /// zerar não apaga (o ✕ no menu remove).
+  void _bumpPlayerCounter(int i, String key, int delta) {
+    if (i < 0 || i >= _players.length) return;
+    final k = key.trim();
+    if (k.isEmpty) return;
+    if (_isGuest) {
+      _send({'action': 'counter', 'player': i, 'key': k, 'delta': delta});
+      return;
+    }
+    _recordHistory(
+        '${_players[i].name}: $k ${delta >= 0 ? '+' : ''}$delta');
+    setState(() {
+      _players[i].counters[k] = ((_players[i].counters[k] ?? 0) + delta)
+          .clamp(-99, 99);
+    });
+    _broadcast();
+  }
+
+  void _removePlayerCounter(int i, String key) {
+    if (i < 0 || i >= _players.length) return;
+    final k = key.trim();
+    if (k.isEmpty) return;
+    if (_isGuest) {
+      // Sem ação própria: zera por ajuste (o host aplica via 'counter').
+      final cur = _players[i].counters[k] ?? 0;
+      if (cur != 0) {
+        _send({'action': 'counter', 'player': i, 'key': k, 'delta': -cur});
+      }
+      return;
+    }
+    _recordHistory('${_players[i].name}: removeu $k');
+    setState(() => _players[i].counters.remove(k));
     _broadcast();
   }
 
@@ -2751,12 +3614,12 @@ class _PlayPageState extends State<PlayPage> {
         t.marks.removeWhere((m) => m.untilEOT);
       }
       if (_players.isEmpty) return;
-      // Pula quem já morreu (vale para mesa com 2+; se todos morrerem,
-      // mantém o ciclo para não travar).
+      // Pula quem já morreu (vida, veneno ou comandante); se todos
+      // morrerem, mantém o ciclo para não travar.
       var next = _active;
       for (var step = 0; step < _players.length; step++) {
         next = (next + 1) % _players.length;
-        if (_players[next].life > 0) break;
+        if (_players[next].alive) break;
       }
       _active = next;
       if (_active == 0) _round++;
@@ -2773,6 +3636,8 @@ class _PlayPageState extends State<PlayPage> {
       for (final p in _players) {
         p.life = _startLife;
         p.poison = 0;
+        p.commander.clear();
+        p.counters.clear();
       }
       _mana.clear();
       _deadAnnounced.clear();
@@ -2793,15 +3658,15 @@ class _PlayPageState extends State<PlayPage> {
   void _checkDeaths() {
     if (_players.isEmpty || !_inMatch) return;
     for (final p in _players) {
-      if (p.life <= 0 && !_deadAnnounced.contains(p.name)) {
+      if (!p.alive && !_deadAnnounced.contains(p.name)) {
         _deadAnnounced.add(p.name);
         _announceDeath(p);
-      } else if (p.life > 0) {
+      } else if (p.alive) {
         _deadAnnounced.remove(p.name);
       }
     }
     if (_players.length > 2) {
-      final alive = _players.where((p) => p.life > 0).toList();
+      final alive = _players.where((p) => p.alive).toList();
       if (alive.length == 1 &&
           _deadAnnounced.isNotEmpty &&
           !_winsAnnounced.contains(alive.first.name)) {
@@ -2840,9 +3705,25 @@ class _PlayPageState extends State<PlayPage> {
 
   void _announceDeath(_MatchPlayer dead) {
     final others =
-        _players.where((p) => p.name != dead.name && p.life > 0).toList();
+        _players.where((p) => p.name != dead.name && p.alive).toList();
     final me = _myName.trim();
     final iDied = me.isNotEmpty && dead.name == me;
+    // Causa: vida chega a 0, veneno a 10 ou comandante a 21.
+    String causeMsg;
+    switch (dead.deathCause) {
+      case 'poison':
+        causeMsg = AppLocale.t('death_poison').replaceAll('{n}', dead.name);
+        break;
+      case 'commander':
+        causeMsg = AppLocale.t('death_commander')
+            .replaceAll('{n}', dead.name)
+            .replaceAll('{c}', dead.killerCommander);
+        break;
+      default:
+        causeMsg = AppLocale.t('su_life_msg')
+            .replaceAll('{n}', dead.name)
+            .replaceAll('{l}', '${dead.life}');
+    }
     String title;
     String msg;
     if (_players.length == 2 && others.length == 1) {
@@ -2853,18 +3734,12 @@ class _PlayPageState extends State<PlayPage> {
           : (iWon
               ? AppLocale.t('su_won')
               : AppLocale.t('su_x_won').replaceAll('{n}', winner.name));
-      msg = iDied
-          ? AppLocale.t('su_died_msg').replaceAll('{w}', winner.name)
-          : AppLocale.t('su_life_msg')
-              .replaceAll('{n}', dead.name)
-              .replaceAll('{l}', '${dead.life}');
+      msg = iDied ? causeMsg : '$causeMsg\n${AppLocale.t('su_died_msg').replaceAll('{w}', winner.name)}';
     } else {
       title = iDied
           ? AppLocale.t('su_died')
           : AppLocale.t('su_x_died').replaceAll('{n}', dead.name);
-      msg = AppLocale.t('su_life_msg')
-          .replaceAll('{n}', dead.name)
-          .replaceAll('{l}', '${dead.life}');
+      msg = causeMsg;
     }
     showDialog(
       context: context,
@@ -2986,9 +3861,22 @@ class _PlayPageState extends State<PlayPage> {
   Future<void> _tokenLauncher({String? owner, bool upsideDown = false}) async {
     final tokenOwner = owner ?? _defaultOwner;
     var quantity = 1;
+    // Modelos salvos (cartas personalizadas): falhar aqui não pode
+    // impedir abrir o launcher (banco antigo sem a tabela, etc.).
+    var templates = <Map<String, Object?>>[];
+    try {
+      templates = await AppDatabase.instance.db.query('custom_templates',
+          orderBy: 'updated_at DESC', limit: 20);
+    } catch (_) {}
+    if (!mounted) return;
     final pick = await showModalBottomSheet<Map<String, Object?>>(
       context: context,
       isScrollControlled: true,
+      showDragHandle: true,
+      // Teto de 72%: cheio até o topo escondia os botões de cima.
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.72,
+      ),
       builder: (_) => StatefulBuilder(
         builder: (ctx, setSheetState) => RotatedBox(
           quarterTurns: upsideDown ? 2 : 0,
@@ -3009,6 +3897,33 @@ class _PlayPageState extends State<PlayPage> {
                     onPressed: () => Navigator.pop(ctx, {'card': true}),
                     icon: const Icon(Icons.search),
                     label: Text(AppLocale.t('token_card')),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(ctx, {'marker': true}),
+                    icon: const Icon(Icons.bookmark_add_outlined),
+                    label: Text(AppLocale.t('mk_add')),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final k in _Marker.kinds)
+                        ActionChip(
+                          avatar: Icon(
+                              k == 'plus'
+                                  ? Icons.arrow_upward
+                                  : k == 'minus'
+                                      ? Icons.arrow_downward
+                                      : Icons.bookmark,
+                              size: 15),
+                          label: Text(AppLocale.t('mk_quick_$k'),
+                              style: const TextStyle(fontSize: 12)),
+                          onPressed: () =>
+                              Navigator.pop(ctx, {'markerKind': k}),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -3034,17 +3949,73 @@ class _PlayPageState extends State<PlayPage> {
                   const SizedBox(height: 8),
                   Flexible(
                     child: SingleChildScrollView(
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          for (final pr in _presets)
-                            ActionChip(
-                              label: Text(
-                                  '${pr['name']} ${(pr['p'] as int) == 0 && (pr['t'] as int) == 0 ? '◆' : '${pr['p']}/${pr['t']}'}'),
-                              onPressed: () => Navigator.pop(
-                                  ctx, {...pr, 'quantity': quantity}),
-                            ),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final pr in _presets)
+                                ActionChip(
+                                  label: Text(
+                                      '${pr['name']} ${(pr['p'] as int) == 0 && (pr['t'] as int) == 0 ? '◆' : '${pr['p']}/${pr['t']}'}'),
+                                  onPressed: () => Navigator.pop(
+                                      ctx, {...pr, 'quantity': quantity}),
+                                ),
+                            ],
+                          ),
+                          if (templates.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            Text(AppLocale.t('tpl_mine'),
+                                style: const TextStyle(
+                                    color: AppTheme.textMuted)),
+                            const SizedBox(height: 4),
+                            for (final tpl in templates)
+                              ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(
+                                    (tpl['name'] ?? '?').toString(),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                                subtitle: Text(
+                                    _templateSub(tpl),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11)),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 18, color: Colors.redAccent),
+                                  tooltip: AppLocale.t('prof_delete'),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 36, minHeight: 36),
+                                  onPressed: () async {
+                                    await _deleteTemplate(
+                                        (tpl['id'] as num?)?.toInt() ?? -1);
+                                    setSheetState(() => templates.removeWhere(
+                                        (e) => e['id'] == tpl['id']));
+                                  },
+                                ),
+                                onTap: () => Navigator.pop(ctx, {
+                                  'template': true,
+                                  'name': (tpl['name'] ?? 'Ficha').toString(),
+                                  'p': (tpl['power'] as num?)?.toInt() ?? 1,
+                                  't': (tpl['toughness'] as num?)
+                                          ?.toInt() ??
+                                      1,
+                                  'cost': (tpl['cost'] ?? '').toString(),
+                                  'type': (tpl['type'] ?? '').toString(),
+                                  'keywords':
+                                      _Token._keywordsFrom(tpl['keywords']),
+                                  'text': (tpl['description'] ?? '').toString(),
+                                  'art': (tpl['art'] ?? '').toString(),
+                                  'quantity': quantity,
+                                }),
+                              ),
+                          ],
                         ],
                       ),
                     ),
@@ -3065,6 +4036,29 @@ class _PlayPageState extends State<PlayPage> {
       await _cardSearch(owner: tokenOwner, upsideDown: upsideDown);
       return;
     }
+    if (pick['marker'] == true) {
+      await _markerDialog(upsideDown: upsideDown);
+      return;
+    }
+    final markerKind = (pick['markerKind'] ?? '').toString();
+    if (_Marker.kinds.contains(markerKind)) {
+      await _markerDialog(kind: markerKind, upsideDown: upsideDown);
+      return;
+    }
+    if (pick['template'] == true) {
+      _createPreset(
+          (pick['name'] ?? 'Ficha').toString(),
+          (pick['p'] as num?)?.toInt() ?? 1,
+          (pick['t'] as num?)?.toInt() ?? 1,
+          tokenOwner,
+          description: (pick['text'] ?? '').toString(),
+          quantity: (pick['quantity'] as num?)?.toInt() ?? 1,
+          art: (pick['art'] ?? '').toString(),
+          cost: (pick['cost'] ?? '').toString(),
+          type: (pick['type'] ?? '').toString(),
+          keywords: _Token._keywordsFrom(pick['keywords']));
+      return;
+    }
     _createPreset(
         (pick['name'] ?? 'Ficha').toString(),
         (pick['p'] as num?)?.toInt() ?? 1,
@@ -3074,8 +4068,51 @@ class _PlayPageState extends State<PlayPage> {
         quantity: (pick['quantity'] as num?)?.toInt() ?? 1);
   }
 
+  /// Subtítulo do modelo salvo: custo + tipo + P/T.
+  String _templateSub(Map<String, Object?> tpl) {
+    final bits = <String>[];
+    final cost = (tpl['cost'] ?? '').toString().trim();
+    if (cost.isNotEmpty) bits.add(cost);
+    final type = (tpl['type'] ?? '').toString().trim();
+    if (type.isNotEmpty) bits.add(type);
+    bits.add(
+        '${(tpl['power'] as num?)?.toInt() ?? 1}/${(tpl['toughness'] as num?)?.toInt() ?? 1}');
+    return bits.join(' • ');
+  }
+
+  Future<void> _saveTemplate(Map<String, Object> tpl) async {
+    try {
+      await AppDatabase.instance.db.insert('custom_templates', {
+        'name': tpl['name'].toString(),
+        'power': tpl['power'],
+        'toughness': tpl['toughness'],
+        'cost': tpl['cost'].toString(),
+        'type': tpl['type'].toString(),
+        'keywords': jsonEncode(tpl['keywords']),
+        'description': tpl['description'].toString(),
+        'art': '',
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      if (mounted) AppToast.show(context, '$e');
+    }
+  }
+
+  Future<void> _deleteTemplate(int id) async {
+    if (id < 0) return;
+    try {
+      await AppDatabase.instance.db
+          .delete('custom_templates', where: 'id = ?', whereArgs: [id]);
+    } catch (_) {}
+  }
+
   void _createPreset(String name, int power, int toughness, String owner,
-      {String description = '', int quantity = 1, String art = ''}) {
+      {String description = '',
+      int quantity = 1,
+      String art = '',
+      String cost = '',
+      String type = '',
+      List<String> keywords = const []}) {
     final amount = quantity.clamp(1, 20).toInt();
     // A arte é por NOME e vale pros dois players: se já existe qualquer
     // ficha com esse nome (minha ou do oponente), herda a arte dela.
@@ -3096,6 +4133,9 @@ class _PlayPageState extends State<PlayPage> {
             'owner': owner,
             'description': description,
             'art': inheritedArt,
+            'cost': cost,
+            'type': type,
+            'keywords': [...keywords],
           }
         });
       }
@@ -3111,7 +4151,10 @@ class _PlayPageState extends State<PlayPage> {
             toughness: toughness,
             owner: owner,
             description: description,
-            art: inheritedArt);
+            art: inheritedArt,
+            cost: cost,
+            type: type,
+            keywords: [...keywords]);
         _stampOwner(t);
         _tokens.add(t);
       }
@@ -3274,6 +4317,27 @@ class _PlayPageState extends State<PlayPage> {
                         decoration: InputDecoration(
                           hintText: AppLocale.t('card_hint'),
                           prefixIcon: const Icon(Icons.search),
+                          // OCR: fotografa a carta física e preenche a busca.
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.camera_alt, size: 20),
+                            tooltip: AppLocale.t('ocr_title'),
+                            onPressed: () async {
+                              final title =
+                                  await Navigator.push<String>(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (_) => const OcrScanPage()),
+                              );
+                              if (title == null ||
+                                  title.trim().isEmpty ||
+                                  !ctx.mounted) {
+                                return;
+                              }
+                              q.text = title.trim();
+                              await doLocal(q.text);
+                              await doRemote();
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -3435,6 +4499,8 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Arte por NOME (ignora dono, P/T e descrição): assim a arte escolhida
   /// aparece nas fichas dos dois players e nas próximas criadas.
+  /// Ordem: mesa atual (memória) → salvas no aparelho (disco). O disco
+  /// evita rebuscar no Scryfall o que já foi alocado uma vez.
   String _artForName(String name) {
     final key = name.trim().toLowerCase();
     if (key.isEmpty) return '';
@@ -3443,7 +4509,49 @@ class _PlayPageState extends State<PlayPage> {
         return token.art;
       }
     }
-    return '';
+    return _artCache[key] ?? '';
+  }
+
+  /// Cache de artes escolhidas (nome normalizado -> url), persistido.
+  /// Vale entre mesas e reinícios: ficha repetida já nasce com arte.
+  static const _artCacheKey = 'token_art_cache';
+  static const _artCacheMax = 400;
+  final Map<String, String> _artCache = {};
+
+  Future<void> _loadArtCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_artCacheKey) ?? '';
+      if (raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      decoded.forEach((k, v) {
+        final key = k.toString().trim().toLowerCase();
+        final url = v.toString().trim();
+        if (key.isNotEmpty && url.isNotEmpty) {
+          _artCache[key] = url;
+        }
+      });
+      while (_artCache.length > _artCacheMax) {
+        _artCache.remove(_artCache.keys.first);
+      }
+    } catch (_) {}
+  }
+
+  /// Guarda a arte alocada (chamada ao escolher no buscador).
+  Future<void> _rememberArt(String name, String url) async {
+    final key = name.trim().toLowerCase();
+    final clean = url.trim();
+    if (key.isEmpty || clean.isEmpty) return;
+    _artCache.remove(key);
+    _artCache[key] = clean;
+    while (_artCache.length > _artCacheMax) {
+      _artCache.remove(_artCache.keys.first);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_artCacheKey, jsonEncode(_artCache));
+    } catch (_) {}
   }
 
   Future<void> _tokenDialog(
@@ -3454,6 +4562,9 @@ class _PlayPageState extends State<PlayPage> {
             ? '1/1'
             : '${existing.power}/${existing.toughness}');
     final descC = TextEditingController(text: existing?.description ?? '');
+    final costC = TextEditingController(text: existing?.cost ?? '');
+    final typeC = TextEditingController(text: existing?.type ?? '');
+    final keywords = <String>{...(existing?.keywords ?? [])};
     String selectedOwner = owner ?? existing?.owner ?? _defaultOwner;
     final ok = await showDialog<bool>(
       context: context,
@@ -3467,16 +4578,57 @@ class _PlayPageState extends State<PlayPage> {
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   TextField(
                       controller: nameC,
                       autofocus: true,
                       decoration:
                           InputDecoration(labelText: AppLocale.t('dlg_name'))),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                            controller: ptC,
+                            decoration: InputDecoration(
+                                labelText: AppLocale.t('dlg_pt'))),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                            controller: costC,
+                            decoration: InputDecoration(
+                                labelText: AppLocale.t('dlg_cost'),
+                                hintText: '{2}{G} ou X')),
+                      ),
+                    ],
+                  ),
                   TextField(
-                      controller: ptC,
-                      decoration:
-                          InputDecoration(labelText: AppLocale.t('dlg_pt'))),
+                      controller: typeC,
+                      decoration: InputDecoration(
+                          labelText: AppLocale.t('dlg_type'),
+                          hintText: AppLocale.t('dlg_type_hint'))),
+                  const SizedBox(height: 8),
+                  Text(AppLocale.t('dlg_abilities'),
+                      style: const TextStyle(
+                          color: AppTheme.textMuted, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final k in _Token.abilityKeys)
+                        FilterChip(
+                          label: Text(AppLocale.t('ab_$k'),
+                              style: const TextStyle(fontSize: 12)),
+                          selected: keywords.contains(k),
+                          visualDensity: VisualDensity.compact,
+                          onSelected: (_) => setD(() {
+                            if (!keywords.remove(k)) keywords.add(k);
+                          }),
+                        ),
+                    ],
+                  ),
                   TextField(
                       controller: descC,
                       maxLines: 2,
@@ -3495,6 +4647,37 @@ class _PlayPageState extends State<PlayPage> {
                       onChanged: (v) =>
                           setD(() => selectedOwner = v ?? selectedOwner),
                     ),
+                  // Salvar modelo: vale criando E editando (guarda o
+                  // estado atual do formulário nos modelos).
+                  Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        icon: const Icon(Icons.bookmark_add_outlined,
+                            size: 16),
+                        label: Text(AppLocale.t('dlg_save_template')),
+                        onPressed: () async {
+                          final tpl = _readTokenForm(
+                              nameC: nameC,
+                              ptC: ptC,
+                              descC: descC,
+                              costC: costC,
+                              typeC: typeC,
+                              keywords: keywords,
+                              powerFb: 1,
+                              toughnessFb: 1);
+                          if (tpl['name'].toString().isEmpty) {
+                            AppToast.show(
+                                context, AppLocale.t('dlg_name_needed'));
+                            return;
+                          }
+                          await _saveTemplate(tpl);
+                          if (mounted) {
+                            AppToast.show(context,
+                                AppLocale.t('dlg_template_saved'));
+                          }
+                        },
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -3510,20 +4693,28 @@ class _PlayPageState extends State<PlayPage> {
         ),
       ),
     );
-    final name = nameC.text.trim();
-    final description = descC.text.trim();
-    final ptRaw = ptC.text.trim();
+    final form = _readTokenForm(
+        nameC: nameC,
+        ptC: ptC,
+        descC: descC,
+        costC: costC,
+        typeC: typeC,
+        keywords: keywords,
+        powerFb: existing?.power ?? 1,
+        toughnessFb: existing?.toughness ?? 1);
+    final name = form['name'].toString();
+    final description = form['description'].toString();
+    final cost = form['cost'].toString();
+    final type = form['type'].toString();
+    final kws = List<String>.from(form['keywords'] as List);
+    final power = form['power'] as int;
+    final toughness = form['toughness'] as int;
     _laterDispose(nameC);
     _laterDispose(descC);
     _laterDispose(ptC);
+    _laterDispose(costC);
+    _laterDispose(typeC);
     if (ok != true || name.isEmpty) return;
-    var power = existing?.power ?? 1;
-    var toughness = existing?.toughness ?? 1;
-    final m = RegExp(r'(\d+)\s*/\s*(\d+)').firstMatch(ptRaw);
-    if (m != null) {
-      power = int.tryParse(m.group(1)!) ?? power;
-      toughness = int.tryParse(m.group(2)!) ?? toughness;
-    }
     // Preserva a arte ao editar o mesmo nome; se o nome mudou,
     // herda a arte já escolhida para o novo nome (dos dois players).
     final keptArt = existing == null
@@ -3546,6 +4737,9 @@ class _PlayPageState extends State<PlayPage> {
             'owner': selectedOwner,
             'description': description,
             'art': keptArt,
+            'cost': cost,
+            'type': type,
+            'keywords': [...kws],
           }
         });
       } else {
@@ -3558,6 +4752,9 @@ class _PlayPageState extends State<PlayPage> {
           'owner': selectedOwner,
           'description': description,
           'art': keptArt,
+          'cost': cost,
+          'type': type,
+          'keywords': [...kws],
         });
       }
       return;
@@ -3573,7 +4770,10 @@ class _PlayPageState extends State<PlayPage> {
             toughness: toughness,
             owner: selectedOwner,
             description: description,
-            art: keptArt);
+            art: keptArt,
+            cost: cost,
+            type: type,
+            keywords: [...kws]);
         _stampOwner(t);
         _tokens.add(t);
       } else {
@@ -3585,15 +4785,48 @@ class _PlayPageState extends State<PlayPage> {
           existing.ownerUid = _uidOfName(selectedOwner);
         }
         existing.description = description;
+        existing.cost = cost;
+        existing.type = type;
+        existing.keywords = [...kws];
         if (keptArt.isNotEmpty) existing.art = keptArt;
       }
     });
     _broadcast();
   }
 
+  /// Lê nome/P/T/custo/tipo/habilidades do formulário de ficha.
+  /// P/T aceita "3/4"; o resto é texto livre (custo aceita "X").
+  Map<String, Object> _readTokenForm(
+      {required TextEditingController nameC,
+      required TextEditingController ptC,
+      required TextEditingController descC,
+      required TextEditingController costC,
+      required TextEditingController typeC,
+      required Set<String> keywords,
+      required int powerFb,
+      required int toughnessFb}) {
+    var power = powerFb;
+    var toughness = toughnessFb;
+    final m =
+        RegExp(r'(\d+)\s*/\s*(\d+)').firstMatch(ptC.text.trim());
+    if (m != null) {
+      power = int.tryParse(m.group(1)!) ?? power;
+      toughness = int.tryParse(m.group(2)!) ?? toughness;
+    }
+    return {
+      'name': nameC.text.trim(),
+      'description': descC.text.trim(),
+      'cost': costC.text.trim(),
+      'type': typeC.text.trim(),
+      'keywords': [...keywords],
+      'power': power,
+      'toughness': toughness,
+    };
+  }
+
   void _tokenTap(_Token t) {
-    // Aviso rápido: com 10 cartas na mesa, segurar sem feedback deixa
-    // dúvida se virou — o toast confirma na hora (vale p/ host e guest).
+    // Toque vira/desvira direto (segurar mostra as informações) — o toast
+    // confirma na hora, com 10 cartas na mesa não há dúvida (host/guest).
     final msg = AppLocale.t(t.tapped ? 'tok_now_untapped' : 'tok_now_tapped')
         .replaceAll('{n}', t.name);
     if (_isGuest) {
@@ -3698,6 +4931,45 @@ class _PlayPageState extends State<PlayPage> {
     _broadcast();
   }
 
+  /// +1/−1 CÓPIA rápida da pilha (otimista p/ guest: some/aparece na
+  /// hora e converge no eco do host). [ref] é qualquer carta da pilha.
+  void _stackCopyBump(_Token ref, int delta) {
+    if (delta > 0) {
+      final mates = _stackMates(ref);
+      final src = mates.isNotEmpty ? mates.first : ref;
+      _createPreset(src.name, src.power, src.toughness, src.owner,
+          description: src.description,
+          quantity: delta.clamp(1, 20),
+          art: src.art.isNotEmpty ? src.art : _artForName(src.name),
+          cost: src.cost,
+          type: src.type,
+          keywords: [...src.keywords]);
+      return;
+    }
+    final mates = _stackMates(ref);
+    if (mates.isEmpty) return;
+    final victim = mates.first;
+    if (_isGuest) {
+      setState(() => _tokens.removeWhere((e) => e.id == victim.id));
+      _persistMatch();
+      _send({'action': 'token_remove', 'id': victim.id});
+      return;
+    }
+    _tokenRemove(victim);
+  }
+
+  /// +1/+1 rápido (otimista p/ guest, como as cópias).
+  void _tokenCounterQuick(_Token t, int delta) {
+    if (_isGuest) {
+      setState(() {
+        t.counters = (t.counters + delta).clamp(0, 99);
+        _cancelOpposing(t);
+      });
+      _persistMatch();
+    }
+    _tokenCounter(t, delta);
+  }
+
   void _tokenRemove(_Token t) {
     if (_isGuest) {
       _send({'action': 'token_remove', 'id': t.id});
@@ -3720,6 +4992,7 @@ class _PlayPageState extends State<PlayPage> {
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (ctx, setD) => AlertDialog(
+          scrollable: true,
           title: Text(AppLocale.t('su_effect')),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3819,6 +5092,707 @@ class _PlayPageState extends State<PlayPage> {
     _broadcast();
   }
 
+  // ============ MARCADORES SEPARADOS ============
+
+  /// Cria marcador (global ou com fichas dentro). Guest pede ao host.
+  /// plus/minus já carimbam o valor inicial nas fichas de dentro.
+  void _markerAdd(String label, int count, List<int> memberIds,
+      {String kind = 'custom'}) {
+    final clean =
+        label.trim().isEmpty ? AppLocale.t('mk_title') : label.trim();
+    final k = _Marker.kinds.contains(kind) ? kind : 'custom';
+    final members = memberIds
+        .where((id) => _tokens.any((t) => t.id == id))
+        .toList();
+    if (_isGuest) {
+      _send({
+        'action': 'marker_add',
+        'player': _myName,
+        'marker': {
+          'id': 0,
+          'label': clean,
+          'count': count.clamp(-99, 99),
+          'memberIds': members,
+          'kind': k,
+        }
+      });
+      if ((k == 'plus' || k == 'minus') && count != 0) {
+        _markerStampIds(members, k, count);
+      }
+      return;
+    }
+    _recordHistory('Criou marcador $clean');
+    final mk = _Marker(
+        id: _markerSeq++,
+        label: clean,
+        count: count.clamp(-99, 99),
+        memberIds: members,
+        kind: k);
+    setState(() => _markers.add(mk));
+    if ((k == 'plus' || k == 'minus') && mk.count != 0) {
+      _stampMembers(mk, mk.count);
+    }
+    _broadcast();
+  }
+
+  /// Aplica [delta] ao contador do marcador E carimba nas fichas
+  /// (plus: +1/+1, minus: −1/−1). É o +/− do detalhe do marcador.
+  void _markerAdjust(int id, int delta) {
+    if (delta == 0) return;
+    _Marker? mk;
+    for (final m in _markers) {
+      if (m.id == id) mk = m;
+    }
+    if (mk == null) return;
+    final kind = mk.kind;
+    final members = _markerMembers(mk).map((t) => t.id).toList();
+    if (_isGuest) {
+      _send({
+        'action': 'marker_set',
+        'player': _myName,
+        'id': id,
+        'count': (mk.count + delta).clamp(-99, 99),
+      });
+      if (kind == 'plus' || kind == 'minus') {
+        _markerStampIds(members, kind, delta);
+      }
+      return;
+    }
+    _recordHistory('Ajustou marcador ${mk.label}');
+    setState(() {
+      mk!.count = (mk.count + delta).clamp(-99, 99);
+      _stampMembers(mk, delta);
+    });
+    _broadcast();
+  }
+
+  /// Carimba [delta] nas fichas (host, direto no estado).
+  void _stampMembers(_Marker mk, int delta) {
+    for (final t in _markerMembers(mk)) {
+      if (mk.kind == 'plus') {
+        t.counters = (t.counters + delta).clamp(0, 99);
+        _cancelOpposing(t);
+      } else if (mk.kind == 'minus') {
+        t.minus = (t.minus + delta).clamp(0, 99);
+        _cancelOpposing(t);
+      }
+    }
+  }
+
+  /// Carimba [delta] nas fichas (guest: otimista + envia por ficha).
+  void _markerStampIds(List<int> ids, String kind, int delta) {
+    for (final id in ids) {
+      _Token? found;
+      for (final t in _tokens) {
+        if (t.id == id) found = t;
+      }
+      if (found == null) continue;
+      if (kind == 'plus') {
+        _tokenCounterQuick(found, delta);
+      } else if (kind == 'minus') {
+        _tokenMinusQuick(found, delta);
+      }
+    }
+  }
+
+  /// −1/−1 rápido (otimista p/ guest, como o +1/+1).
+  void _tokenMinusQuick(_Token t, int delta) {
+    if (_isGuest) {
+      setState(() {
+        t.minus = (t.minus + delta).clamp(0, 99);
+        _cancelOpposing(t);
+      });
+      _persistMatch();
+    }
+    _tokenMinus(t, delta);
+  }
+
+  void _markerSet(int id,
+      {String? label, int? count, List<int>? memberIds}) {
+    if (_isGuest) {
+      _send({
+        'action': 'marker_set',
+        'player': _myName,
+        'id': id,
+        if (label != null) 'label': label,
+        if (count != null) 'count': count,
+        if (memberIds != null) 'memberIds': memberIds,
+      });
+      return;
+    }
+    _recordHistory('Ajustou marcador');
+    setState(() {
+      for (final mk in _markers) {
+        if (mk.id != id) continue;
+        if (label != null && label.trim().isNotEmpty) mk.label = label.trim();
+        if (count != null) mk.count = count.clamp(-99, 99);
+        if (memberIds != null) {
+          mk.memberIds = memberIds
+              .where((mid) => _tokens.any((t) => t.id == mid))
+              .toList();
+        }
+      }
+    });
+    _broadcast();
+  }
+
+  void _markerRemove(int id) {
+    if (_isGuest) {
+      _send({'action': 'marker_remove', 'player': _myName, 'id': id});
+      return;
+    }
+    _recordHistory('Removeu marcador');
+    setState(() => _markers.removeWhere((mk) => mk.id == id));
+    _broadcast();
+  }
+
+  /// Nome de exibição dos membros (pula fichas que já saíram).
+  List<_Token> _markerMembers(_Marker mk) => [
+        for (final id in mk.memberIds)
+          for (final t in _tokens)
+            if (t.id == id) t
+      ];
+
+  /// Diálogo de criação: nome + contador + escopo (global ou fichas).
+  /// [tokenId] pré-vincula a ficha de origem (criado pelo menu dela).
+  /// Criação de marcador com TIPO + exemplo: +1/+1 e −1/−1 carimbam
+  /// nas fichas de dentro; contador global é só informativo.
+  /// [kind] pré-seleciona (modelos rápidos do +); [tokenId] vincula.
+  Future<void> _markerDialog(
+      {int? tokenId, String? kind, bool upsideDown = false}) async {
+    final labelC = TextEditingController(
+        text: kind == 'plus'
+            ? AppLocale.t('mk_plus_name')
+            : kind == 'minus'
+                ? AppLocale.t('mk_minus_name')
+                : kind == 'custom'
+                    ? AppLocale.t('mk_custom_name')
+                    : '');
+    var count = 0;
+    var selKind =
+        _Marker.kinds.contains(kind) ? kind! : 'custom';
+    final members = <int>{
+      if (tokenId != null && _tokens.any((t) => t.id == tokenId)) tokenId
+    };
+    var global = members.isEmpty && selKind == 'custom';
+    String kindExample(String k) {
+      final n = members.isEmpty
+          ? '—'
+          : members.length == 1
+              ? (_tokens
+                      .where((t) => t.id == members.first)
+                      .firstOrNull
+                      ?.name ??
+                  '—')
+              : '${members.length}';
+      return switch (k) {
+        'plus' => AppLocale.t('mk_plus_ex').replaceAll('{n}', n),
+        'minus' => AppLocale.t('mk_minus_ex').replaceAll('{n}', n),
+        _ => AppLocale.t('mk_custom_ex'),
+      };
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => RotatedBox(
+          quarterTurns: upsideDown ? 2 : 0,
+          child: AlertDialog(
+            title: Text(AppLocale.t('mk_new')),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(AppLocale.t('mk_type'),
+                    style: const TextStyle(
+                        color: AppTheme.textMuted, fontSize: 12)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final k in _Marker.kinds)
+                      ChoiceChip(
+                        label: Text(AppLocale.t('mk_kind_$k'),
+                            style: const TextStyle(fontSize: 12)),
+                        selected: selKind == k,
+                        onSelected: (_) => setD(() {
+                          selKind = k;
+                          if (selKind == 'custom') {
+                            global = members.isEmpty;
+                          } else if (global) {
+                            global = false;
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 4),
+                  child: Text(kindExample(selKind),
+                      style: const TextStyle(
+                          color: AppTheme.gold, fontSize: 12)),
+                ),
+                TextField(
+                    controller: labelC,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                        labelText: AppLocale.t('mk_name'),
+                        hintText: AppLocale.t('mk_name_hint'))),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                        icon: const Icon(Icons.remove_circle_outline),
+                        onPressed: () =>
+                            setD(() => count = (count - 1).clamp(-99, 99))),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('$count',
+                          style: const TextStyle(
+                              fontSize: 22, fontWeight: FontWeight.bold)),
+                    ),
+                    IconButton(
+                        icon: const Icon(Icons.add_circle,
+                            color: AppTheme.gold),
+                        onPressed: () =>
+                            setD(() => count = (count + 1).clamp(-99, 99))),
+                  ],
+                ),
+                if (selKind == 'custom')
+                  CheckboxListTile(
+                    value: global,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: Text(AppLocale.t('mk_global'),
+                        style: const TextStyle(fontSize: 14)),
+                    subtitle: Text(AppLocale.t('mk_global_sub'),
+                        style: const TextStyle(fontSize: 12)),
+                    onChanged: (v) => setD(() {
+                      global = v ?? true;
+                      if (global) members.clear();
+                    }),
+                  ),
+                if (selKind != 'custom' || !global) ...[
+                  Text(
+                      selKind == 'custom'
+                          ? AppLocale.t('mk_members')
+                          : AppLocale.t('mk_stamp_where'),
+                      style: const TextStyle(
+                          color: AppTheme.textMuted, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  if (_tokens.isEmpty)
+                    Text(AppLocale.t('play_no_tokens'),
+                        style: const TextStyle(
+                            color: AppTheme.textMuted, fontSize: 12)),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final t in _tokens)
+                        FilterChip(
+                          label: Text(t.name,
+                              style: const TextStyle(fontSize: 12)),
+                          selected: members.contains(t.id),
+                          visualDensity: VisualDensity.compact,
+                          onSelected: (_) => setD(() {
+                            if (!members.remove(t.id)) members.add(t.id);
+                            if (selKind == 'custom') {
+                              global = members.isEmpty;
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(AppLocale.t('common_cancel'))),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(AppLocale.t('common_save'))),
+          ],
+          ),
+        ),
+      ),
+    );
+    _laterDispose(labelC);
+    if (ok != true) return;
+    final useGlobal = selKind == 'custom' && global;
+    _markerAdd(labelC.text, count, useGlobal ? [] : members.toList(),
+        kind: selKind);
+  }
+
+  /// Detalhe do marcador: conta, membros (com atalho p/ a ficha) e excluir.
+  Future<void> _markerSheet(_Marker mk, {bool upsideDown = false}) async {
+    final entry = _markers
+        .where((m) => m.id == mk.id)
+        .firstOrNull;
+    if (entry == null) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) {
+          final cur = _markers
+              .where((m) => m.id == mk.id)
+              .firstOrNull;
+          if (cur == null) {
+            Navigator.pop(ctx);
+            return const SizedBox.shrink();
+          }
+          final members = _markerMembers(cur);
+          return RotatedBox(
+            quarterTurns: upsideDown ? 2 : 0,
+            child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(cur.label,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text(
+                      cur.kind == 'custom'
+                          ? (cur.isGlobal
+                              ? AppLocale.t('mk_global')
+                              : AppLocale.t('mk_scope_n')
+                                  .replaceAll('{n}', '${members.length}'))
+                          : AppLocale.t('mk_kind_${cur.kind}'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: AppTheme.textMuted, fontSize: 12)),
+                  if (cur.kind != 'custom')
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                          cur.isGlobal
+                              ? AppLocale.t('mk_global')
+                              : AppLocale.t('mk_scope_n')
+                                  .replaceAll('{n}', '${members.length}'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: AppTheme.gold, fontSize: 12)),
+                    ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                          icon:
+                              const Icon(Icons.remove_circle_outline, size: 30),
+                          onPressed: () {
+                            // plus/minus carimbam nas fichas junto.
+                            if (cur.kind == 'custom') {
+                              _markerSet(cur.id, count: cur.count - 1);
+                            } else {
+                              _markerAdjust(cur.id, -1);
+                            }
+                            setD(() {});
+                          }),
+                      Padding(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                            cur.kind == 'custom'
+                                ? '×${cur.count}'
+                                : '+${cur.count}',
+                            style: const TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                      IconButton(
+                          icon: const Icon(Icons.add_circle,
+                              color: AppTheme.gold, size: 30),
+                          onPressed: () {
+                            if (cur.kind == 'custom') {
+                              _markerSet(cur.id, count: cur.count + 1);
+                            } else {
+                              _markerAdjust(cur.id, 1);
+                            }
+                            setD(() {});
+                          }),
+                    ],
+                  ),
+                  if (!cur.isGlobal) ...[
+                    const SizedBox(height: 4),
+                    for (final t in members)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.style, size: 18),
+                        title: Text(
+                            '${t.name} ${t.power == 0 && t.toughness == 0 ? '◆' : '${effP(t)}/${effT(t)}'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                        subtitle: cur.kind == 'plus'
+                            ? Text('+${t.counters}/+${t.counters}',
+                                style: const TextStyle(fontSize: 11))
+                            : cur.kind == 'minus'
+                                ? Text('−${t.minus}/−${t.minus}',
+                                    style:
+                                        const TextStyle(fontSize: 11))
+                                : null,
+                        trailing: IconButton(
+                          icon: const Icon(Icons.close,
+                              size: 18, color: Colors.redAccent),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 36, minHeight: 36),
+                          onPressed: () {
+                            final next = cur.memberIds
+                                .where((id) => id != t.id)
+                                .toList();
+                            _markerSet(cur.id, memberIds: next);
+                            setD(() {});
+                          },
+                        ),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _tokenOptions(t, upsideDown: upsideDown);
+                        },
+                      ),
+                  ],
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.person_add_alt, size: 16),
+                          label: Text(AppLocale.t('mk_edit_members')),
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            await _markerMembersDialog(cur,
+                                upsideDown: upsideDown);
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.delete_outline,
+                              size: 16, color: Colors.redAccent),
+                          label: Text(AppLocale.t('prof_delete')),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _markerRemove(cur.id);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Escolhe as fichas de dentro do marcador (multi-seleção).
+  Future<void> _markerMembersDialog(_Marker mk,
+      {bool upsideDown = false}) async {
+    final sel = <int>{...mk.memberIds};
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => RotatedBox(
+          quarterTurns: upsideDown ? 2 : 0,
+          child: AlertDialog(
+            title: Text(AppLocale.t('mk_edit_members')),
+            content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_tokens.isEmpty)
+                  Text(AppLocale.t('play_no_tokens'),
+                      style: const TextStyle(color: AppTheme.textMuted)),
+                for (final t in _tokens)
+                  CheckboxListTile(
+                    value: sel.contains(t.id),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: Text(
+                        '${t.name} ${t.power == 0 && t.toughness == 0 ? '◆' : '${effP(t)}/${effT(t)}'}',
+                        style: const TextStyle(fontSize: 13)),
+                    subtitle: t.owner.isEmpty
+                        ? null
+                        : Text(t.owner,
+                            style: const TextStyle(fontSize: 11)),
+                    onChanged: (v) => setD(() {
+                      if (v == true) {
+                        sel.add(t.id);
+                      } else {
+                        sel.remove(t.id);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(AppLocale.t('common_cancel'))),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(AppLocale.t('common_apply'))),
+          ],
+          ),
+        ),
+      ),
+    );
+    if (ok == true) _markerSet(mk.id, memberIds: sel.toList());
+  }
+
+  /// Botão discreto de marcadores (vai ao fim da fileira de mana):
+  /// ícone apagado vazio, dourado com selo de quantidade quando há.
+  /// Abre o quadro com os marcadores da mesa X.
+  Widget _markerBtn({bool upsideDown = false}) {
+    final n = _markers.length;
+    return InkWell(
+      onTap: () => _markersBoard(upsideDown: upsideDown),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Icon(Icons.bookmark_outline,
+                size: 16,
+                color: n > 0 ? AppTheme.gold : AppTheme.textFaint),
+            if (n > 0)
+              Positioned(
+                right: -5,
+                top: -5,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: AppTheme.gold,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text('$n',
+                      style: const TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black)),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Quadro dos marcadores da mesa: lista (detalhe ao tocar, ✕ exclui)
+  /// + criar. Substitui a faixa fixa — não disputa tela.
+  Future<void> _markersBoard({bool upsideDown = false}) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => RotatedBox(
+          quarterTurns: upsideDown ? 2 : 0,
+          child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(AppLocale.t('mk_board'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 4),
+                if (_markers.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Text(AppLocale.t('mk_empty'),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: AppTheme.textMuted)),
+                  )
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      padding: EdgeInsets.zero,
+                      itemCount: _markers.length,
+                      itemBuilder: (_, k) {
+                        final mk = _markers[k];
+                        final members = _markerMembers(mk);
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                              mk.kind == 'plus'
+                                  ? Icons.arrow_upward
+                                  : mk.kind == 'minus'
+                                      ? Icons.arrow_downward
+                                      : Icons.bookmark,
+                              size: 18,
+                              color: AppTheme.gold),
+                          title: Text(
+                              '${mk.label} ${mk.kind == 'custom' ? '×${mk.count}' : '+${mk.count}'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  const TextStyle(fontSize: 13)),
+                          subtitle: Text(
+                              mk.isGlobal
+                                  ? AppLocale.t('mk_global')
+                                  : AppLocale.t('mk_scope_n').replaceAll(
+                                      '{n}', '${members.length}'),
+                              style: const TextStyle(fontSize: 11)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                size: 18, color: Colors.redAccent),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 36, minHeight: 36),
+                            onPressed: () {
+                              _markerRemove(mk.id);
+                              setD(() {});
+                            },
+                          ),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            _markerSheet(mk, upsideDown: upsideDown);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(AppLocale.t('mk_new')),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _markerDialog(upsideDown: upsideDown);
+                  },
+                ),
+              ],
+            ),
+          ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ============ MANA ============
 
   Map<String, int> _manaOf(String player) {
@@ -3846,6 +5820,7 @@ class _PlayPageState extends State<PlayPage> {
     _broadcast();
   }
 
+  /// Escolha da cor ao resolver Tesouro (pips oficiais, não bolinhas).
   Future<String?> _askManaColor({bool upsideDown = false}) async {
     return showDialog<String>(
       context: context,
@@ -3863,15 +5838,7 @@ class _PlayPageState extends State<PlayPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      CircleAvatar(
-                        backgroundColor: _manaDots[c],
-                        child: Text(c,
-                            style: TextStyle(
-                                color: _manaDarkText(c)
-                                    ? Colors.black87
-                                    : Colors.white,
-                                fontWeight: FontWeight.bold)),
-                      ),
+                      MtgPip(c, size: 38),
                       const SizedBox(height: 2),
                       Text(_manaName(c), style: const TextStyle(fontSize: 11)),
                     ],
@@ -4086,27 +6053,37 @@ class _PlayPageState extends State<PlayPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Botão voltar do celular: primeiro sai do modo foco, depois pede
+    // confirmação para sair da sala/mesa — nunca fecha o app de cara.
+    // A página é uma aba (IndexedStack), então o "pop" aqui sairia do app.
+    return PopScope(
+      canPop: !_needsBackIntercept,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _onBackPressed();
+      },
+      child: Scaffold(
       appBar: _noTopBar
           ? null
           : AppBar(
               title: Row(
                 children: [
-                  Text(AppLocale.t('nav_play')),
+                  Flexible(
+                    child: Text(AppLocale.t('nav_play'),
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
                   if (_isHost) ...[
                     const SizedBox(width: 8),
-                    _netDot(
-                        '$_peers ${AppLocale.t('on_connected_n')}'),
+                    _netDot('$_peers'),
                   ],
                   if (_isGuest) ...[
                     const SizedBox(width: 8),
-                    _netDot('conectado'),
+                    _netDot('•'),
                   ],
                   // Online (Firebase): igual ao LAN — ponto na topbar.
                   if (_isOnline && _onlineTotal() > 0) ...[
                     const SizedBox(width: 8),
-                    _netDot(
-                        '${_onlineTotal()} ${AppLocale.t('on_connected_n')}'),
+                    _netDot('${_onlineTotal()}'),
                   ],
                 ],
               ),
@@ -4143,18 +6120,9 @@ class _PlayPageState extends State<PlayPage> {
                     icon: const Icon(Icons.close),
                     tooltip: AppLocale.t('su_end_match'),
                     onPressed: () async {
-                      if (_isGuest) {
-                        await _leaveMatch();
-                      } else {
-                        if (_isHost) {
-                          await _stopHosting();
-                        }
-
-                        if (mounted) {
-                          setState(() => _inMatch = false);
-                        }
-                        await _clearSavedMatch();
-                      }
+                      final go = await _confirmLeaveMatch();
+                      if (go != true || !mounted) return;
+                      await _exitMatchAndRoom();
                     },
                   ),
                 // No setup, a caixa entra na imersão global; na partida,
@@ -4168,7 +6136,87 @@ class _PlayPageState extends State<PlayPage> {
               ],
             ),
       body: _inMatch ? _matchView() : _setupView(),
+      ),
     );
+  }
+
+  /// Há algo para o voltar interceptar? Foco ativo ou partida em curso
+  /// (sala online, mesa LAN ou local). Fora disso, o voltar sai do app.
+  bool get _needsBackIntercept {
+    if (_focusMode) return true;
+    if (!_inMatch) return false;
+    return true;
+  }
+
+  /// Voltar do celular: 1º sai do modo foco; 2º pede confirmação e sai
+  /// da sala/mesa (sem fechar o app — a partida encerra e fica na aba).
+  Future<void> _onBackPressed() async {
+    if (_focusMode) {
+      _toggleFocusMode();
+      return;
+    }
+    if (!_inMatch || !mounted) return;
+    final go = await _confirmLeaveMatch();
+    if (go != true || !mounted) return;
+    await _exitMatchAndRoom();
+  }
+
+  /// Diálogo de confirmação antes de sair da sala/mesa. Texto conforme
+  /// o modo: sala online (com código), mesa LAN hospedada ou partida.
+  /// [session] restringe àquela sessão (botão "Sair da sala" do painel).
+  Future<bool?> _confirmLeaveMatch({_NetSession? session}) {
+    var body = AppLocale.t('play_exit_match_body');
+    final code = (session?.roomCode.trim().isNotEmpty ?? false)
+        ? session!.roomCode.trim()
+        : (_primaryRoomCode.trim().isNotEmpty
+            ? _primaryRoomCode.trim()
+            : _sessions.values
+                .map((s) => s.roomCode.trim())
+                .firstWhere((c) => c.isNotEmpty, orElse: () => ''));
+    if (_isOnline || session != null) {
+      body = AppLocale.t('play_exit_room_body')
+          .replaceAll('{c}', code.isEmpty ? '…' : code);
+    } else if (_host != null || _hosting) {
+      body = AppLocale.t('play_exit_host_body');
+    }
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppLocale.t('play_exit_title')),
+        content: Text(body),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(AppLocale.t('common_cancel'))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(AppLocale.t('common_leave'))),
+        ],
+      ),
+    );
+  }
+
+  /// Encerra partida e sai da sala/sessão (online derruba as sessões;
+  /// LAN guest desconecta; LAN host fecha a mesa). Usado pelo ✕ e pelo
+  /// voltar — sempre depois de [_confirmLeaveMatch].
+  Future<void> _exitMatchAndRoom() async {
+    if (_focusMode) _toggleFocusMode();
+    // Online (host ou guest): derruba TODAS as sessões e apaga a sala
+    // do host. LAN guest: desconecta. LAN host: fecha a mesa.
+    if (_isOnline || _isGuest) {
+      await _leaveMatch();
+      return;
+    }
+    if (_host != null) {
+      await _stopHosting();
+    }
+    if (mounted) {
+      setState(() {
+        _hosting = false;
+        _inMatch = false;
+      });
+    }
+    await _clearSavedMatch();
   }
 
   void _toggleFocusMode() {
@@ -4177,32 +6225,206 @@ class _PlayPageState extends State<PlayPage> {
     AppEvents.playFocusActive.value = _focusMode;
   }
 
+  /// Aplica tema/fundo na mesa de UM jogador (nunca global).
+  /// Local: muda direto o jogador escolhido. Online/LAN: autoridade
+  /// (host) aplica e republica; guest aplica otimista e pede ao host
+  /// via ação `visual` (ele valida, aplica e republica para todos).
+  /// O nó da sala acompanha (lista/entrada tardia) pela sessão dona.
+  Future<void> _applyPlayerVisual(int idx,
+      {String? theme, String? bg}) async {
+    if (idx < 0 || idx >= _players.length) return;
+    final nextTheme = theme ?? _players[idx].theme;
+    final nextBg = bg ?? _players[idx].bg;
+    if (nextTheme.isNotEmpty && !_tableStyles.containsKey(nextTheme)) return;
+    if (nextBg.isNotEmpty &&
+        !tableBackgrounds.any((b) => b.id == nextBg)) return;
+    final target = _players[idx];
+    if (target.theme == nextTheme && target.bg == nextBg) return;
+    _recordHistory('Trocou o visual da mesa (${target.name})');
+    setState(() {
+      target.theme = nextTheme;
+      target.bg = nextBg;
+      // Guarda meu fundo p/ próximas salas (só quando é a minha mesa).
+      if ((_isOnline || _host != null || _guest != null) &&
+          _isLocalPlayerIdx(idx)) {
+        _myTableBg = nextBg;
+      }
+    });
+    final isNet = _isOnline || _host != null || _guest != null;
+    final canPublish = !isNet ||
+        (!_isOnline && _host != null) ||
+        (_isOnline && _hostSession != null);
+    if (isNet && !canPublish) {
+      _send({
+        'action': 'visual',
+        'player': target.name,
+        'theme': nextTheme,
+        'bg': nextBg,
+      });
+    } else {
+      _broadcast();
+    }
+    if (_isOnline) {
+      final key = target.name.trim().toLowerCase();
+      for (final s in _sessions.values) {
+        if (!s.inRoom || s.net == null) continue;
+        if (s.displayName.trim().toLowerCase() != key) continue;
+        try {
+          await s.net!.updatePlayerVisual(theme: nextTheme, bg: nextBg);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Sheet "Visual da mesa": tema + fundo da mesa de UM jogador.
+  /// Online/LAN mostra só as minhas mesas (cada um muda a sua);
+  /// no local escolho qual mesa estou mudando (uma por jogador).
+  /// Aplica na hora (sem fechar) para dar para ajustar tema e fundo.
   Future<void> _showTableThemes() async {
+    if (_players.isEmpty) return;
+    final isNet = _isOnline || _host != null || _guest != null;
+    List<int> editable;
+    if (!isNet) {
+      editable = [for (var i = 0; i < _players.length; i++) i];
+    } else if (_isOnline) {
+      editable = [
+        for (var i = 0; i < _players.length; i++)
+          if (_isLocalPlayerIdx(i)) i
+      ];
+    } else {
+      final me = _myName.trim().toLowerCase();
+      editable = [
+        for (var i = 0; i < _players.length; i++)
+          if (me.isNotEmpty &&
+              _players[i].name.trim().toLowerCase() == me)
+            i
+      ];
+    }
+    var sel = editable.isEmpty ? -1 : editable.first;
+    if (editable.contains(_arenaSel)) sel = _arenaSel;
     await showModalBottomSheet<void>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(AppLocale.t('su_table'),
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            for (final entry in _tableStyles.entries)
-              ListTile(
-                leading: CircleAvatar(backgroundColor: entry.value.accent),
-                title: Text(AppLocale.t(entry.value.name)),
-                trailing: _tableTheme == entry.key
-                    ? Icon(Icons.check, color: entry.value.accent)
-                    : null,
-                onTap: () {
-                  setState(() => _tableTheme = entry.key);
-                  _broadcast();
-                  Navigator.pop(ctx);
-                },
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) {
+          if (sel < 0 || sel >= _players.length) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(AppLocale.t('play_visual_mine_only'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: AppTheme.textMuted)),
               ),
-          ]),
-        ),
+            );
+          }
+          final cur = _players[sel];
+          var bgLabel = AppLocale.t('su_bg_none');
+          for (final b in tableBackgrounds) {
+            if (b.id == cur.bg) {
+              bgLabel = b.label;
+              break;
+            }
+          }
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              // Rolável: com 6 temas a lista passa da altura em landscape.
+              child: SingleChildScrollView(
+                child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(AppLocale.t('su_table'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      if (isNet)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                              AppLocale.t('play_visual_mine_only'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: AppTheme.textMuted, fontSize: 12)),
+                        ),
+                      if (editable.length > 1) ...[
+                        const SizedBox(height: 10),
+                        Text(AppLocale.t('play_visual_pick'),
+                            style: const TextStyle(
+                                color: AppTheme.textMuted, fontSize: 12)),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final i in editable)
+                              ChoiceChip(
+                                label: Text(_players[i].name),
+                                selected: sel == i,
+                                onSelected: (_) => setD(() => sel = i),
+                              ),
+                          ],
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: _themeSwatch(_tableStyle),
+                        title:
+                            Text(AppLocale.t('play_visual_default')),
+                        trailing: cur.theme.isEmpty
+                            ? Icon(Icons.check,
+                                color: _tableStyle.accent)
+                            : null,
+                        onTap: () async {
+                          await _applyPlayerVisual(sel, theme: '');
+                          if (ctx.mounted) {
+                            setD(() {});
+                          }
+                        },
+                      ),
+                      for (final entry in _tableStyles.entries)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: _themeSwatch(entry.value),
+                          title: Text(AppLocale.t(entry.value.name)),
+                          trailing: cur.theme == entry.key
+                              ? Icon(Icons.check,
+                                  color: entry.value.accent)
+                              : null,
+                          onTap: () async {
+                            await _applyPlayerVisual(sel,
+                                theme: entry.key);
+                            if (ctx.mounted) {
+                              setD(() {});
+                            }
+                          },
+                        ),
+                      const Divider(height: 16),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: _bgThumb(cur.bg, w: 40, h: 28),
+                        title: Text(AppLocale.t('su_bg')),
+                        subtitle: Text(bgLabel,
+                            style: const TextStyle(
+                                color: AppTheme.textMuted, fontSize: 12)),
+                        trailing: const Icon(Icons.chevron_right, size: 20),
+                        onTap: () => _bgPickerSheet(
+                          current: cur.bg,
+                          onPick: (v) async {
+                            await _applyPlayerVisual(sel, bg: v);
+                            if (ctx.mounted) {
+                              setD(() {});
+                            }
+                          },
+                        ),
+                      ),
+                    ]),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -4263,6 +6485,44 @@ class _PlayPageState extends State<PlayPage> {
             ),
           ],
         ),
+        // Formato da mesa LAN/Online: Arena (única, nova) ou Legacy.
+        if (_playMode == _PlayMode.lan ||
+            _playMode == _PlayMode.online) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Text(AppLocale.t('fmt_title'),
+                  style: const TextStyle(
+                      color: AppTheme.textMuted, fontSize: 12)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ValueListenableBuilder<String>(
+                  valueListenable: PlayPrefs.tableFormat,
+                  builder: (_, fmt, __) => SegmentedButton<String>(
+                    style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact),
+                    segments: const [
+                      ButtonSegment(
+                          value: 'arena',
+                          icon: Icon(Icons.groups_outlined, size: 14),
+                          label: Text('Arena',
+                              style: TextStyle(fontSize: 12))),
+                      ButtonSegment(
+                          value: 'legacy',
+                          icon: Icon(Icons.view_agenda_outlined, size: 14),
+                          label: Text('Legacy',
+                              style: TextStyle(fontSize: 12))),
+                    ],
+                    selected: {fmt},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (s) =>
+                        PlayPrefs.setTableFormat(s.first),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 12),
         // Conexão/jogadores primeiro: Online e LAN aparecem sem scroll.
         if (_playMode == _PlayMode.lan) ...[
@@ -4283,10 +6543,93 @@ class _PlayPageState extends State<PlayPage> {
           for (var i = 0; i < _playerCount; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: TextField(
-                controller: _nameCtrls[i],
-                decoration: InputDecoration(
-                    labelText: '${AppLocale.t('su_player')} ${i + 1}'),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _nameCtrls[i],
+                      decoration: InputDecoration(
+                          labelText:
+                              '${AppLocale.t('su_player')} ${i + 1}'),
+                    ),
+                  ),
+                  // Lado na mesa (só faz diferença com 3+).
+                  IconButton(
+                    icon: Icon(
+                        (_playerSides.length > i && _playerSides[i])
+                            ? Icons.arrow_upward
+                            : Icons.arrow_downward,
+                        size: 18),
+                    color: (_playerSides.length > i && _playerSides[i])
+                        ? AppTheme.gold
+                        : AppTheme.textMuted,
+                    tooltip:
+                        '${AppLocale.t('su_side_top')}/${AppLocale.t('su_side_bottom')}',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                        minWidth: 34, minHeight: 34),
+                    onPressed: () => setState(() {
+                      while (_playerSides.length <= i) {
+                        _playerSides.add(_playerSides.length >= 2);
+                      }
+                      _playerSides[i] = !_playerSides[i];
+                    }),
+                  ),
+                  // Tema da mesa deste jogador.
+                  PopupMenuButton<String>(
+                    icon: CircleAvatar(
+                        radius: 10,
+                        backgroundColor:
+                            (_tableStyles[_playerThemes.length > i
+                                        ? _playerThemes[i]
+                                        : ''] ??
+                                    _tableStyle)
+                                .accent),
+                    tooltip: AppLocale.t('su_theme'),
+                    padding: EdgeInsets.zero,
+                    onSelected: (v) => setState(() {
+                      while (_playerThemes.length <= i) {
+                        _playerThemes.add('');
+                      }
+                      _playerThemes[i] = v;
+                    }),
+                    itemBuilder: (_) => [
+                      PopupMenuItem(
+                          value: '',
+                          child: Text(AppLocale.t('su_table_sub'))),
+                      for (final e in _tableStyles.entries)
+                        PopupMenuItem(
+                          value: e.key,
+                          child: Row(children: [
+                            _themeSwatch(e.value, r: 8),
+                            const SizedBox(width: 8),
+                            Text(AppLocale.t(e.value.name)),
+                          ]),
+                        ),
+                    ],
+                  ),
+                  // Fundo da mesa (visual, com prévia de como fica).
+                  if (tableBackgrounds.isNotEmpty)
+                    InkWell(
+                      onTap: () => _bgPickerSheet(
+                        current: _playerBgs.length > i
+                            ? _playerBgs[i]
+                            : '',
+                        onPick: (v) => setState(() {
+                          while (_playerBgs.length <= i) {
+                            _playerBgs.add('');
+                          }
+                          _playerBgs[i] = v;
+                        }),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: _bgThumb(_playerBgs.length > i
+                            ? _playerBgs[i]
+                            : ''),
+                      ),
+                    ),
+                ],
               ),
             ),
           if (_friends.isNotEmpty) ...[
@@ -4317,9 +6660,19 @@ class _PlayPageState extends State<PlayPage> {
           ],
         ],
         const SizedBox(height: 12),
-        _formatCard(),
-        const SizedBox(height: 12),
-        _tableThemeCard(),
+        // Guest esperando: só a espera (formato/vida/tema são do host).
+        if (_isWaitingGuest) ...[
+          _waitingCard(),
+        ] else ...[
+          _formatCard(),
+          const SizedBox(height: 12),
+          // Visual global só fora do local: no local cada jogador já
+          // tem tema+fundo próprios no "Quem joga?" acima.
+          if (_playMode != _PlayMode.local) ...[
+            _tableThemeCard(),
+            const SizedBox(height: 12),
+          ],
+        ],
         const SizedBox(height: 16),
         if (_playMode == _PlayMode.local)
           SizedBox(
@@ -4330,11 +6683,58 @@ class _PlayPageState extends State<PlayPage> {
               label: Text(AppLocale.t('su_start')),
             ),
           ),
-        const SizedBox(height: 12),
-        Text(AppLocale.t('su_foot'),
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppTheme.textMuted)),
       ],
+    );
+  }
+
+  /// Esperando o host começar (guest online na sala ou guest LAN
+  /// conectado, sem partida e sem autoridade): tela de espera — sem
+  /// formato, vida inicial ou tema (tudo é do host).
+  bool get _isWaitingGuest {
+    if (_inMatch) return false;
+    if (_hostSession != null || _host != null || _hosting) return false;
+    if (_isOnline) {
+      return _sessions.values.any((s) => s.inRoom && !s.hosting);
+    }
+    if (_playMode == _PlayMode.lan) return _guest != null;
+    return false;
+  }
+
+  /// Cartão de espera do guest (sem nada configurável).
+  Widget _waitingCard() {
+    final code = _firstInRoom?.roomCode.trim() ?? '';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 3)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(AppLocale.t('on_wait_host'),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
+                  if (code.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                          '${AppLocale.t('on_room')}: $code',
+                          style: const TextStyle(
+                              color: AppTheme.gold,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -4378,24 +6778,30 @@ class _PlayPageState extends State<PlayPage> {
               ],
             ),
             if (_playMode == _PlayMode.local)
-                Row(
-                  children: [
-                    Text(AppLocale.t('su_players')),
-                    IconButton(
-                        icon: const Icon(Icons.remove_circle_outline),
-                        onPressed: () => setState(() {
-                              _playerCount = (_playerCount - 1).clamp(1, 6);
-                              _resetNameCtrls();
-                            })),
-                    Text('$_playerCount',
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                    IconButton(
-                        icon: const Icon(Icons.add_circle, color: AppTheme.gold),
-                        onPressed: () => setState(() {
-                              _playerCount = (_playerCount + 1).clamp(1, 6);
-                              _resetNameCtrls();
-                            })),
+              Row(
+                children: [
+                  Text(AppLocale.t('su_players_mode')),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: SegmentedButton<int>(
+                      style: SegmentedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      segments: [
+                        for (var n = 1; n <= 6; n++)
+                          ButtonSegment(
+                              value: n,
+                              label: Text('$n',
+                                  style:
+                                      const TextStyle(fontSize: 12))),
+                      ],
+                      selected: {_playerCount.clamp(1, 6)},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (s) => setState(() {
+                        _playerCount = s.first.clamp(1, 6);
+                        _resetNameCtrls();
+                      }),
+                    ),
+                  ),
                 ],
               ),
           ],
@@ -4417,8 +6823,7 @@ class _PlayPageState extends State<PlayPage> {
             for (final entry in _tableStyles.entries)
               ChoiceChip(
                 selected: _tableTheme == entry.key,
-                avatar: CircleAvatar(
-                    radius: 8, backgroundColor: entry.value.accent),
+                avatar: _themeSwatch(entry.value, r: 7),
                 label: Text(AppLocale.t(entry.value.name)),
                 onSelected: (_) => setState(() => _tableTheme = entry.key),
               ),
@@ -4452,6 +6857,30 @@ class _PlayPageState extends State<PlayPage> {
                 ),
               ],
             ),
+            // Fundo da MINHA mesa no LAN (thumb com prévia).
+            if (tableBackgrounds.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  children: [
+                    Text(AppLocale.t('su_bg'),
+                        style: const TextStyle(
+                            color: AppTheme.textMuted, fontSize: 12)),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () => _bgPickerSheet(
+                        current: _myTableBg,
+                        onPick: (v) =>
+                            setState(() => _myTableBg = v),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: _bgThumb(_myTableBg, w: 40, h: 28),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -4614,6 +7043,30 @@ class _PlayPageState extends State<PlayPage> {
                 ),
               ],
             ),
+            // Fundo da MINHA mesa no online (vai no roster da sala).
+            if (tableBackgrounds.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  children: [
+                    Text(AppLocale.t('su_bg'),
+                        style: const TextStyle(
+                            color: AppTheme.textMuted, fontSize: 12)),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () => _bgPickerSheet(
+                        current: _myTableBg,
+                        onPick: (v) =>
+                            setState(() => _myTableBg = v),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: _bgThumb(_myTableBg, w: 40, h: 28),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             for (final b in _sessionMismatchBanners())
               Padding(
                 padding: const EdgeInsets.only(top: 6),
@@ -4737,9 +7190,24 @@ class _PlayPageState extends State<PlayPage> {
           children: [
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text(AppLocale.t('fr_invites'),
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 13)),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(AppLocale.t('fr_invites'),
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13)),
+                  ),
+                  InkWell(
+                    onTap: () =>
+                        _watchInvites(_fbUid, force: true),
+                    child: const Padding(
+                      padding: EdgeInsets.all(6),
+                      child: Icon(Icons.refresh,
+                          size: 16, color: AppTheme.textMuted),
+                    ),
+                  ),
+                ],
+              ),
             ),
             for (final inv in invites)
               Padding(
@@ -4866,7 +7334,11 @@ class _PlayPageState extends State<PlayPage> {
               tooltip: AppLocale.t('on_leave'),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              onPressed: () => _leaveSession(s),
+              onPressed: () async {
+                final go = await _confirmLeaveMatch(session: s);
+                if (go != true || !mounted) return;
+                _leaveSession(s);
+              },
             ),
           ],
         ),
@@ -5016,7 +7488,11 @@ class _PlayPageState extends State<PlayPage> {
             const SizedBox(width: 8),
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: () => _leaveSession(s),
+                onPressed: () async {
+                  final go = await _confirmLeaveMatch(session: s);
+                  if (go != true || !mounted) return;
+                  _leaveSession(s);
+                },
                 icon: const Icon(Icons.logout, size: 16),
                 label: Text(AppLocale.t('on_leave')),
               ),
@@ -5465,56 +7941,134 @@ class _PlayPageState extends State<PlayPage> {
     );
   }
 
+  /// Duelo 1x1 local: altura ADAPTATIVA (nunca estoura).
+  /// A faixa de cartas fica com todo o resto (até _tokenMaxH); a vida
+  /// encolhe via FittedBox quando aperta (paisagem). Em zona minúscula
+  /// (paisagem baixa: nem o fixo cabe) rola por dentro. Tamanhos no
+  /// bloco "AJUSTE FINO DA MESA".
   Widget _duelZone(int playerIndex, {bool upsideDown = false}) {
     final player = _players[playerIndex];
     final tokens = _tokensOf(player);
     final stacks = _groupTokens(tokens);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
-      child: Column(children: [
-        Expanded(
-          child: tokens.isEmpty
-              ? const Center(
-                  child: Text('Sem fichas',
-                      style: TextStyle(color: AppTheme.textMuted)))
-              : ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(3, 4, 3, 10),
-                  itemCount: stacks.length,
-                  itemBuilder: (_, i) => _tokenStackMini(stacks[i],
-                      w: _focusMode ? 118 : 108,
-                      h: _focusMode ? 166 : 138,
+      // Moldura com o tema/fundo DESTE jogador (igual online 1v1).
+      child: _zoneFrame(
+        p: player,
+        isActive: playerIndex == _active,
+        padding: EdgeInsets.zero,
+        child: LayoutBuilder(builder: (_, cons) {
+          final maxH = cons.maxHeight;
+          final tight = maxH.isFinite && maxH < _duelCompactH;
+          final lifeH = !maxH.isFinite
+              ? _duelLifeH
+              : (tight ? _duelLifeHCompact : _duelLifeH);
+          final manaH = tight ? 26.0 : 32.0;
+          final stripH = maxH.isFinite
+              ? (maxH - _duelNameH - manaH - lifeH - 14.0)
+                  .clamp(0.0, _tokenMaxH)
+              : _tokenMaxH;
+          Widget nameRow() {
+            return SizedBox(
+              height: _duelNameH,
+              child: Row(children: [
+                Expanded(
+                  child: Text(
+                      '${player.name} • ${tokens.length} ${AppLocale.t('play_tokens_count')}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 12)),
+                ),
+                IconButton(
+                  icon: Icon(Icons.add_circle,
+                      color: _tableStyle.accent, size: 20),
+                  tooltip: AppLocale.t('play_add_token'),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 30, minHeight: 30),
+                  onPressed: () => _tokenLauncher(
+                      owner: player.name, upsideDown: upsideDown),
+                ),
+              ]),
+            );
+          }
+
+          Widget strip(double h) {
+            if (h < _tokenMinH) return const SizedBox.shrink();
+            if (tokens.isEmpty) {
+              return SizedBox(
+                height: h,
+                child: const Center(
+                    child: Text('Sem fichas',
+                        style: TextStyle(color: AppTheme.textMuted))),
+              );
+            }
+            final w = (h * _tokenAspect).clamp(0.0, _tokenMaxW);
+            return SizedBox(
+              height: h,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(3, 4, 3, 10),
+                itemCount: stacks.length,
+                itemBuilder: (_, i) => _tokenStackMini(stacks[i],
+                    w: w, h: h, upsideDown: upsideDown),
+              ),
+            );
+          }
+
+          Widget lifeBox() {
+            // Vida encolhe proporcional (sem estourar) quando aperta.
+            return SizedBox(
+              height: lifeH,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: SizedBox(
+                  width: 210,
+                  height: 96,
+                  // Topo do duelo lê de ponta-cabeça: menu de vida acompanha.
+                  child: _playerTileContent(playerIndex,
                       upsideDown: upsideDown),
                 ),
-        ),
-        SizedBox(
-          height: 30,
-          child: Row(children: [
-            Expanded(
-              child: Text(
-                  '${player.name} • ${tokens.length} ${AppLocale.t('play_tokens_count')}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 12)),
-            ),
-            IconButton(
-              icon: Icon(Icons.add_circle, color: _tableStyle.accent, size: 20),
-              tooltip: AppLocale.t('play_add_token'),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-              onPressed: () =>
-                  _tokenLauncher(owner: player.name, upsideDown: upsideDown),
-            ),
-          ]),
-        ),
-        _manaRow(player.name),
-        SizedBox(
-          width: 210,
-          height: 96,
-          child: _playerTileContent(playerIndex),
-        ),
-      ]),
+              ),
+            );
+          }
+
+          // Zona minúscula: nem nome+mana+vida cabem — rola por dentro
+          // com faixa fixa em vez de estourar (paisagem ~90px).
+          final minNeed = _duelNameH + manaH + lifeH;
+          if (maxH.isFinite && maxH < minNeed) {
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  nameRow(),
+                  strip(64),
+                  _manaRow(player.name,
+                      compact: true, upsideDown: upsideDown),
+                  lifeBox(),
+                ],
+              ),
+            );
+          }
+          // stretch: os filhos (faixa, vida) recebem a largura da zona.
+          // Sem isso a largura chega infinita até o Expanded da vida.
+          return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                nameRow(),
+                Expanded(
+                  child: stripH < _tokenMinH
+                      ? const SizedBox.shrink()
+                      : strip(stripH),
+                ),
+                _manaRow(player.name,
+                    compact: tight, upsideDown: upsideDown),
+                lifeBox(),
+              ]);
+        }),
+      ),
     );
   }
 
@@ -5614,18 +8168,20 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   /// Moldura comum da mesa (fundo + SafeArea + saída do foco).
-  Widget _tableFrame(Widget content) {
+  Widget _tableFrame(Widget content,
+      {bool showFocusFab = true, Widget? actionButton}) {
     return Stack(
       children: [
         Container(
-          color: AppTheme.bg,
+          // O fundo do tema global finalmente vale (antes era fixo).
+          color: _tableStyle.background,
           child: SafeArea(
             top: _noTopBar,
             bottom: false,
             child: content,
           ),
         ),
-        if (_focusMode)
+        if (_focusMode && showFocusFab)
           Positioned(
             right: 12,
             bottom: 12,
@@ -5636,12 +8192,648 @@ class _PlayPageState extends State<PlayPage> {
               child: const Icon(Icons.fullscreen_exit),
             ),
           ),
+        if (actionButton != null)
+          // Lateral central (neutro para cima/baixo): não favorece
+          // nenhum lado, diferente do canto inferior.
+          Positioned(
+            right: 12,
+            top: 0,
+            bottom: 0,
+            child: Center(child: actionButton),
+          ),
       ],
+    );
+  }
+
+  /// Funções da faixa num sheet: vez, dados, moeda, desfazer,
+  /// histórico, foco e temas. Usado no multi 3+ (sem faixa fixa).
+  Future<void> _toolbarSheet() async {
+    final canPass = _canPassTurn();
+    final activeName = _players.isEmpty
+        ? '—'
+        : _players[_active.clamp(0, _players.length - 1)].name;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Opacity(
+                opacity: canPass ? 1 : 0.45,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: GestureDetector(
+                    onTap: canPass
+                        ? () {
+                            Navigator.pop(ctx);
+                            _nextTurn();
+                          }
+                        : null,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 12),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(colors: [
+                          _tableStyle.accent.withValues(alpha: 0.28),
+                          _tableStyle.accent.withValues(alpha: 0.12),
+                        ]),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color:
+                                _tableStyle.accent.withValues(alpha: 0.6)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.skip_next,
+                              size: 18, color: _tableStyle.accent),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              _players.isEmpty
+                                  ? '${AppLocale.t('play_round')} $_round'
+                                  : '${AppLocale.t('play_turn')}: $activeName • R$_round',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.casino, size: 22),
+                      tooltip: AppLocale.t('su_dice20'),
+                      onPressed: () => _roll('D20', 20),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.toll, size: 22),
+                      tooltip: AppLocale.t('su_coin'),
+                      onPressed: _flipCoin,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.undo, size: 22),
+                      tooltip: AppLocale.t('play_undo'),
+                      onPressed:
+                          _history.isNotEmpty || _isGuest ? _undo : null,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.history, size: 22),
+                      tooltip: AppLocale.t('play_history'),
+                      onPressed: _showHistory,
+                    ),
+                    IconButton(
+                      icon: Icon(
+                          _focusMode
+                              ? Icons.fullscreen_exit
+                              : Icons.fullscreen,
+                          size: 22),
+                      tooltip: _focusMode
+                          ? AppLocale.t('play_exit_focus')
+                          : AppLocale.t('play_focus'),
+                      color: _focusMode ? _tableStyle.accent : null,
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _toggleFocusMode();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.palette_outlined, size: 22),
+                      tooltip: AppLocale.t('su_table'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _showTableThemes();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  /// Local multi: lados escolhidos no setup (3p = 2+1, 4p = 2+2).
+  /// Os dois lados dividem a altura por igual (sem um pequeno e outro
+  /// gigante); cada lado preenche a largura — centralizado, sem cantos
+  /// vazios — e só rola na horizontal se passar.
+  /// O lado de cima gira 180º (leitura de quem está do outro lado,
+  /// como no duelo); o de baixo fica reto.
+  Widget _localMultiView() {
+    final top = <int>[];
+    final bottom = <int>[];
+    for (var i = 0; i < _players.length; i++) {
+      final isTop = i < _playerSides.length ? _playerSides[i] : i >= 2;
+      if (isTop) {
+        top.add(i);
+      } else {
+        bottom.add(i);
+      }
+    }
+    // Tudo num lado só? Usa ele sozinho (sem lado vazio).
+    final sides = [
+      if (top.isNotEmpty) top,
+      if (bottom.isNotEmpty) bottom,
+    ];
+    // A Faixa virou botão flutuante (3+): solo mantém a barra.
+    final floatingBar = _players.length >= 3;
+    return _tableFrame(
+      Column(
+        children: [
+          if (!floatingBar) _duelToolbar(),
+          for (var s = 0; s < sides.length; s++)
+            Expanded(
+              child: _sideRow(sides[s],
+                  rotated:
+                      sides[s] == top && bottom.isNotEmpty),
+            ),
+        ],
+      ),
+      showFocusFab: !floatingBar,
+      actionButton: floatingBar
+          ? FloatingActionButton(
+              heroTag: null,
+              mini: true,
+              tooltip: AppLocale.t('tb_functions'),
+              onPressed: _toolbarSheet,
+              child: const Icon(Icons.tune),
+            )
+          : null,
+    );
+  }
+
+  /// Uma fileira lateral: se couber, as zonas dividem a largura
+  /// igualmente (preenchendo, sem vazio nos cantos); se passar,
+  /// rola na horizontal com zonas de 330px. [rotated] vira o lado
+  /// inteiro para quem está em frente (e os menus das zonas junto).
+  Widget _sideRow(List<int> idxs, {bool rotated = false}) {
+    Widget row = LayoutBuilder(builder: (_, c) {
+      const zoneW = 330.0;
+      const gap = 8.0;
+      const pad = 24.0;
+      final needW = idxs.length * zoneW + (idxs.length - 1) * gap + pad;
+      if (needW <= c.maxWidth) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var k = 0; k < idxs.length; k++) ...[
+                if (k > 0) const SizedBox(width: gap),
+                Expanded(
+                    child: _localZoneCard(idxs[k],
+                        upsideDown: rotated)),
+              ],
+            ],
+          ),
+        );
+      }
+      return ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        itemCount: idxs.length,
+        itemBuilder: (_, k) => Container(
+          width: zoneW,
+          margin: const EdgeInsets.only(right: gap),
+          child: _localZoneCard(idxs[k], upsideDown: rotated),
+        ),
+      );
+    });
+    return rotated ? RotatedBox(quarterTurns: 2, child: row) : row;
+  }
+  /// Uma mesa individual do Local multi: vida ao lado de
+  /// (mana compacta + fichas + add), com o tema/fundo do jogador.
+  /// Borda dourada em quem tem a vez. [upsideDown] vira todos os
+  /// menus/sheets daquele lado para quem está em frente.
+  Widget _localZoneCard(int i, {bool upsideDown = false}) {
+    final p = _players[i];
+    final mine = _tokensOf(p);
+    final stacks = _groupTokens(mine);
+    return _zoneFrame(
+      p: p,
+      isActive: i == _active,
+      padding: const EdgeInsets.all(6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+              width: 132,
+              child: _playerTileContent(i,
+                  style: _styleFor(p), upsideDown: upsideDown)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _manaRow(p.name,
+                    compact: true,
+                    upsideDown: upsideDown,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('×${mine.length}',
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold)),
+                        InkWell(
+                          onTap: () => _tokenLauncher(
+                              owner: p.name, upsideDown: upsideDown),
+                          child: const Padding(
+                            padding: EdgeInsets.all(2),
+                            child: Icon(Icons.add_circle,
+                                color: AppTheme.gold, size: 18),
+                          ),
+                        ),
+                      ],
+                    )),
+                Expanded(
+                  child: LayoutBuilder(builder: (_, c) {
+                    // Ocupa o que sobrar, sem piso mínimo: com pouco
+                    // espaço some em vez de estourar. Minis escalam.
+                    final stripH = (c.maxHeight - 4).clamp(0.0, 110.0);
+                    if (stripH < 20) return const SizedBox.shrink();
+                    final mw = stripH * 0.72;
+                    if (stacks.isEmpty) {
+                      return Center(
+                          child: Text(AppLocale.t('play_no_tokens'),
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 11)));
+                    }
+                    return ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: EdgeInsets.zero,
+                      itemCount: stacks.length,
+                      itemBuilder: (_, k) => _tokenStackMini(stacks[k],
+                          w: mw,
+                          h: stripH,
+                          style: _styleFor(p),
+                          upsideDown: upsideDown),
+                    );
+                  }),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Arena (LAN/Online) espelhando o duelo Local: em cima a mesa de
+  /// quem está selecionado, faixa central, embaixo SEMPRE eu. No
+  /// landscape as duas ficam lado a lado. Vidas lado a lado no trilho:
+  /// tocar mostra em cima. Sem mesas empilhadas.
+  Widget _arenaView() {
+    if (_players.isEmpty) {
+      return _tableFrame(
+        Center(
+            child: Text(AppLocale.t('play_no_tokens'),
+                style: const TextStyle(color: AppTheme.textMuted))),
+      );
+    }
+    final me = _meIndex.clamp(0, _players.length - 1);
+    // Topo mostra outro jogador; sozinho, mostra eu.
+    var sel = _arenaSel.clamp(0, _players.length - 1);
+    if (_players.length > 1 && sel == me) {
+      sel = [for (var i = 0; i < _players.length; i++) if (i != me) i].first;
+    }
+    final wide = MediaQuery.of(context).size.width >
+        MediaQuery.of(context).size.height;
+    final solo = _players.length < 2;
+    final topZone = _arenaZone(sel);
+    final myZone = _arenaZone(me);
+    return _tableFrame(
+      Column(
+        children: [
+          if (_canRecoverLan) _reconnectBanner(),
+          if (_isOnline) _onlineNotice(),
+          if (solo)
+            Expanded(child: myZone)
+          else if (wide)
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: topZone),
+                  Expanded(child: myZone),
+                ],
+              ),
+            )
+          else
+            Expanded(child: topZone),
+          _duelToolbar(),
+          if (!solo) _arenaRail(sel, me),
+          if (!solo && !wide) Expanded(child: myZone),
+          if (_sharedTokens.isNotEmpty) _sharedSection(),
+          _arenaEffects(),
+        ],
+      ),
+    );
+  }
+
+  /// Trilho de jogadores: pílula com nome + vida ao vivo por jogador.
+  /// Toque seleciona (a mesa de cima mostra ele); segurar abre a vida.
+  /// Borda dourada = selecionado; vida vermelha = em risco.
+  Widget _arenaRail(int sel, int me) {
+    return SizedBox(
+      height: 70,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+        itemCount: _players.length,
+        itemBuilder: (_, i) {
+          final p = _players[i];
+          final isSel = i == sel;
+          final isTurn = i == _active;
+          return GestureDetector(
+            onTap: () => setState(() => _arenaSel = i),
+            onLongPress: () => _lifeMenu(i),
+            child: Container(
+              width: 104,
+              margin: const EdgeInsets.only(right: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: isSel ? AppTheme.goldSoft : AppTheme.sidebar,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: isSel
+                        ? AppTheme.gold
+                        : (isTurn
+                            ? _tableStyle.accent
+                            : AppTheme.border),
+                    width: isSel ? 2 : 1),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                      '${p.name}${i == me ? ' • ${AppLocale.t('on_you')}' : ''}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 11)),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (isTurn)
+                        Container(
+                          width: 7,
+                          height: 7,
+                          margin: const EdgeInsets.only(right: 4),
+                          decoration: BoxDecoration(
+                              color: _tableStyle.accent,
+                              shape: BoxShape.circle),
+                        ),
+                      Text('${p.life}',
+                          style: TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.bold,
+                              color: p.life <= 5
+                                  ? Colors.redAccent
+                                  : AppTheme.text)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Uma zona da Arena: nome/contador/dados/kick/add, vida compacta,
+  /// mana e fichas. Sem alturas fixas além da faixa de fichas (que se
+  /// ajusta ao espaço via LayoutBuilder) — nunca estoura.
+  Widget _arenaZone(int idx) {
+    final p = _players[idx];
+    final mine = _tokensOf(p);
+    final stacks = _groupTokens(mine);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: _zoneFrame(
+        p: p,
+        isActive: idx == _active,
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        // LayoutBuilder decide o modo: altura folgada usa Column+Expanded
+        // (igual a antes); altura apertada (<180, ex. giro/hot-reload com
+        // 114px) usa rolagem compacta — nunca estoura (era 7px overflow).
+        child: LayoutBuilder(builder: (_, cons) {
+          final tight =
+              cons.maxHeight.isFinite && cons.maxHeight < _arenaCompactH;
+          if (tight) {
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _arenaZoneHeader(idx, p, mine.length, compact: true),
+                  _arenaLifeRow(idx, compact: true),
+                  _manaRow(p.name, compact: true),
+                  const SizedBox(height: 2),
+                  _arenaTokenStrip(stacks, p, fixedHeight: 56),
+                ],
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _arenaZoneHeader(idx, p, mine.length, compact: false),
+              _arenaLifeRow(idx),
+              _manaRow(p.name),
+              Expanded(
+                child: LayoutBuilder(builder: (_, c) {
+                  // Faixa aproveita a altura livre (até _arenaStripMaxH);
+                  // minis maiores agora que a faixa fixa saiu do layout.
+                  // Sem piso mínimo: some em vez de estourar.
+                  final stripH = (c.maxHeight - 4)
+                      .clamp(0.0, _arenaStripMaxH);
+                  if (stripH < 20) return const SizedBox.shrink();
+                  if (stacks.isEmpty) {
+                    return Center(
+                        child: Text(AppLocale.t('play_no_tokens'),
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 11)));
+                  }
+                  return _arenaTokenStrip(stacks, p, fixedHeight: stripH);
+                }),
+              ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  /// Cabeçalho da zona (nome/contador/dados/kick/add). No modo compacto
+  /// (zona apertada) os dados saem — já existem na barra central — e os
+  /// botões encolhem de 34 para 28px.
+  Widget _arenaZoneHeader(int idx, _MatchPlayer p, int tokenCount,
+      {bool compact = false}) {
+    final btnCons =
+        BoxConstraints(minWidth: compact ? 28 : 34, minHeight: compact ? 28 : 34);
+    final iconSize = compact ? 16.0 : 20.0;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+              '$tokenCount ${AppLocale.t('play_tokens_count')}'
+              ' • ${p.name}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  shadows: [
+                    Shadow(color: Colors.black, blurRadius: 4)
+                  ])),
+        ),
+        if (!compact) _diceRow(p.name),
+        // Host expulsa remoto direto da zona (nunca a si).
+        if ((_host != null || _hostSession != null) &&
+            !_isLocalPlayerIdx(idx))
+          IconButton(
+            icon: Icon(Icons.person_remove_outlined,
+                size: iconSize, color: Colors.redAccent),
+            tooltip:
+                AppLocale.t('su_remove_title').replaceAll('{n}', p.name),
+            padding: EdgeInsets.zero,
+            constraints: btnCons,
+            onPressed: () => _kickPlayer(p.name),
+          ),
+        IconButton(
+          icon: Icon(Icons.auto_awesome, size: iconSize),
+          tooltip: AppLocale.t('play_new_effect'),
+          padding: EdgeInsets.zero,
+          constraints: btnCons,
+          onPressed: _effectDialog,
+        ),
+        IconButton(
+          icon: Icon(Icons.add, size: compact ? 18 : 22),
+          tooltip: AppLocale.t('play_add_token'),
+          padding: EdgeInsets.zero,
+          constraints: btnCons,
+          onPressed: () => _tokenLauncher(owner: p.name),
+        ),
+      ],
+    );
+  }
+
+  /// Faixa horizontal de fichas com altura fixa. Altura fixa (sem
+  /// Expanded) permite usar dentro de rolagem no modo compacto e
+  /// reutilizar no modo normal — altura 0 some em vez de estourar.
+  Widget _arenaTokenStrip(
+      List<_TokenStack> stacks, _MatchPlayer p, {required double fixedHeight}) {
+    if (fixedHeight < 20) return const SizedBox.shrink();
+    final mw = (fixedHeight * _tokenAspect).clamp(0.0, _tokenMaxW);
+    if (stacks.isEmpty) {
+      return SizedBox(
+        height: fixedHeight,
+        child: Center(
+            child: Text(AppLocale.t('play_no_tokens'),
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 11))),
+      );
+    }
+    return SizedBox(
+      height: fixedHeight,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        itemCount: stacks.length,
+        itemBuilder: (_, k) => _tokenStackMini(stacks[k],
+            w: mw, h: fixedHeight, style: _styleFor(p)),
+      ),
+    );
+  }
+
+  /// Vida compacta da zona: zonas grandes −/+ e número, + veneno.
+  /// (segurar número abre presets). Roteamento de autoridade intacto.
+  Widget _arenaLifeRow(int idx, {bool compact = false}) {
+    final p = _players[idx];
+    return Row(
+      children: [
+        Expanded(child: _lifeStepper(idx, fontSize: compact ? 18 : 24)),
+        _poisonStepper(idx),
+        // Comandante (só quando existe): toque abre o menu completo.
+        if (p.commanderMax > 0)
+          InkWell(
+            onTap: () => _lifeMenu(idx),
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Text('Cmd ${p.commanderMax}',
+                  style: TextStyle(
+                      color: p.commanderDead
+                          ? Colors.redAccent
+                          : AppTheme.textMuted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold)),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Efeitos ativos da mesa (global, como no Legacy).
+  Widget _arenaEffects() {
+    if (_effects.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        children: [
+          for (final e in _effects)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Chip(
+                label: Text(
+                    '${e.label} ${e.power >= 0 ? '+' : ''}${e.power}/${e.toughness >= 0 ? '+' : ''}${e.toughness}'
+                    '${e.targetId == -1 ? ' (todas)' : ''}'
+                    '${e.untilEOT ? ' ⏳' : ''}',
+                    style: const TextStyle(fontSize: 12)),
+                deleteIcon: const Icon(Icons.close, size: 14),
+                onDeleted: () => _effectRemove(e.id),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
   Widget _matchView() {
     if (_isSharedPhoneDuel) return _sharedPhoneDuelView();
+    // Local com 1, 3, 4, 5 ou 6: grade de mesas (2p fica no duelo).
+    if (_playMode == _PlayMode.local) return _localMultiView();
+    // LAN/Online: Arena (mesa única) ou Legacy (empilhado antigo).
+    // O dual (2 perfis no mesmo aparelho, para testes) também entra na
+    // Arena: os dois perfis já são jogadores distintos em _players, com
+    // UIDs locais próprios — o trilho mostra os dois e cada zona opera
+    // pelo dono dela. Legacy mantém o _dualMatchView antigo.
+    if ((_isOnline || _playMode == _PlayMode.lan) &&
+        PlayPrefs.tableFormat.value == 'arena') {
+      return _arenaView();
+    }
     // Dois perfis/sessões no mesmo aparelho: zonas A e B próprias.
     if (_isDualMode) return _dualMatchView();
     // Rolável: zonas dos dois lados + fileiras laterais.
@@ -5872,7 +9064,7 @@ class _PlayPageState extends State<PlayPage> {
               ),
             // ---- minhas fichas: fileira lateral (uma linha) ----
             SizedBox(
-              height: 172,
+              height: 190,
               child: Builder(builder: (_) {
                 final mine = _mineTokens;
                 final stacks = _groupTokens(mine);
@@ -5887,7 +9079,7 @@ class _PlayPageState extends State<PlayPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   itemCount: stacks.length,
                   itemBuilder: (_, i) =>
-                      _tokenStackMini(stacks[i], w: 116, h: 164),
+                      _tokenStackMini(stacks[i], w: 130, h: 182),
                 );
               }),
             ),
@@ -6151,14 +9343,115 @@ class _PlayPageState extends State<PlayPage> {
     );
   }
 
-  /// Botão segurar-para-acelerar: toque = 1 passo, segurando
-  /// dispara repetido e cada vez mais rápido (depois do 6º tick,
-  /// pula de 5 em 5). Usado na vida.
-  Widget _holdBtn(IconData icon, int sign, int player) {
-    return _HoldButton(
-      icon: icon,
-      onTap: () => _bumpLife(player, sign),
-      onStep: (n) => _bumpLife(player, n <= 6 ? sign : sign * 5),
+  /// Linha de vida em ZONAS GRANDES de toque: a metade esquerda tira,
+  /// a direita põe (toque = 1, segurar = acelera em marchas 1/5/10).
+  /// O número no meio soma 1 no toque e abre presets ao segurar.
+  /// Ao soltar a segurada, um aviso mostra o saldo (de X para Y).
+  Widget _lifeStepper(int i,
+      {bool upsideDown = false, double fontSize = 23}) {
+    final p = _players[i];
+    final st = _styleFor(p);
+    // Vida no início da segurada (p/ o saldo ao soltar).
+    var holdBase = p.life;
+    void holdToast() {
+      if (i < 0 || i >= _players.length) return;
+      final now = _players[i].life;
+      final d = now - holdBase;
+      if (d == 0 || !mounted) return;
+      AppToast.show(
+          context,
+          AppLocale.t('life_moved')
+              .replaceAll('{a}', '$holdBase')
+              .replaceAll('{b}', '$now'));
+    }
+
+    Widget zoneBtn(IconData icon, int sign, Alignment align) {
+      return _HoldButton(
+        icon: icon,
+        iconSize: 26,
+        minHeight: 48,
+        expand: true,
+        alignment: align,
+        onTap: () => _bumpLife(i, sign),
+        onStep: (n) => _bumpLife(
+            i, n <= 6 ? sign : (n <= 12 ? sign * 5 : sign * 10)),
+        onHoldStart: () {
+          if (i >= 0 && i < _players.length) holdBase = _players[i].life;
+        },
+        onHoldEnd: holdToast,
+      );
+    }
+
+    Widget number() {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _bumpLife(i, 1),
+        // Segurar abre o menuzinho: presets + personalizado.
+        onLongPress: () => _lifeMenu(i, upsideDown: upsideDown),
+        // Caixa de clique gorda só na horizontal: as laterais têm
+        // espaço de sobra. Na vertical cresce pouco para NÃO invadir
+        // a fileira de veneno/comandante de baixo.
+        child: Padding(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+          child: Text('${p.life}',
+              style: TextStyle(
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.bold,
+                  color: p.life <= 5 ? Colors.redAccent : st.accent)),
+        ),
+      );
+    }
+
+    // Sem largura limitada (rolagem horizontal, FittedBox medindo...),
+    // Expanded estoura: usa zonas fixas e deixa o pai escalar.
+    return LayoutBuilder(builder: (_, cons) {
+      if (!cons.maxWidth.isFinite) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(width: 64, child: zoneBtn(Icons.remove, -1, Alignment.center)),
+            number(),
+            SizedBox(width: 64, child: zoneBtn(Icons.add, 1, Alignment.center)),
+          ],
+        );
+      }
+      return Row(
+        // SEM stretch: em rolagem a altura é infinita e o stretch estoura
+        // ("forces an infinite height"). As zonas já têm 48px de mínimo.
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+              child: zoneBtn(Icons.remove, -1, Alignment.centerLeft)),
+          number(),
+          Expanded(child: zoneBtn(Icons.add, 1, Alignment.centerRight)),
+        ],
+      );
+    });
+  }
+
+  /// Veneno compacto (− ☠n +) reutilizado nas duas caixas de vida.
+  Widget _poisonStepper(int i) {
+    final p = _players[i];
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Text('☠ ', style: TextStyle(fontSize: 10)),
+        InkWell(
+            onTap: () => _bumpPoison(i, -1),
+            child: const Padding(
+                padding: EdgeInsets.all(6),
+                child: Icon(Icons.remove, size: 14))),
+        Text('${p.poison}',
+            style:
+                const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+        InkWell(
+            onTap: () => _bumpPoison(i, 1),
+            child: const Padding(
+                padding: EdgeInsets.all(6),
+                child: Icon(Icons.add, size: 14))),
+      ],
     );
   }
 
@@ -6199,154 +9492,384 @@ class _PlayPageState extends State<PlayPage> {
     );
   }
 
-  /// Conteúdo do tile (reusado no 1v1 centralizado).
-  Widget _playerTileContent(int i) {
+  /// Conteúdo do tile (reusado no 1v1 centralizado). Com [style],
+  /// usa o tema da mesa daquele jogador (online mostra o do oponente);
+  /// sem [style], resolve sozinho pelo jogador — nada precisa mudar
+  /// nos chamadores. [upsideDown] gira o menu de vida junto.
+  Widget _playerTileContent(int i, {_TableStyle? style, bool upsideDown = false}) {
     final p = _players[i];
+    final st = style ?? _styleFor(p);
     final isActive = i == _active;
+    // Vidro fosco bem leve: painel translúcido + blur de fundo para
+    // fundir com a imagem da mesa sem perder legibilidade.
     return Card(
-      color: p.alive ? _tableStyle.panel : AppTheme.panel,
+      color: p.alive
+          ? st.panel.withValues(alpha: 0.45)
+          : AppTheme.panel.withValues(alpha: 0.45),
+      clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
-            color: isActive ? _tableStyle.accent : AppTheme.border,
+            color: isActive ? st.accent : AppTheme.border,
             width: isActive ? 2 : 1),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(p.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                    color: p.alive ? AppTheme.text : AppTheme.textFaint)),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _holdBtn(Icons.remove, -1, i),
-                GestureDetector(
-                  onTap: () => _bumpLife(i, 1),
-                  // Segurar abre o menuzinho: presets + personalizado.
-                  onLongPress: () => _lifeMenu(i),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
+        // Blindagem final: se a caixa for mais baixa que o conteúdo
+        // (zonas apertadas de 80px), encolhe proporcional em vez de
+        // estourar. Quando cabe, o scaleDown não altera nada.
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(p.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                      color: p.alive ? AppTheme.text : AppTheme.textFaint)),
+              _lifeStepper(i,
+                  upsideDown: upsideDown, fontSize: 23),
+              _poisonStepper(i),
+              // Dano de comandante (só quando existe): toque abre o menu.
+              if (p.commanderMax > 0)
+                InkWell(
+                  onTap: () => _lifeMenu(i, upsideDown: upsideDown),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: Text('${p.life}',
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                        'Cmd ${p.commanderMax}/${_MatchPlayer.commanderLethal}',
                         style: TextStyle(
-                            fontSize: 23,
-                            fontWeight: FontWeight.bold,
-                            color: p.life <= 5
+                            color: p.commanderDead
                                 ? Colors.redAccent
-                                : _tableStyle.accent)),
+                                : AppTheme.textMuted,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold)),
                   ),
                 ),
-                _holdBtn(Icons.add, 1, i),
-              ],
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text('☠ ', style: TextStyle(fontSize: 10)),
+              // Extras (só quando existem): resumo + atalho p/ o menu.
+              if (p.counters.isNotEmpty)
                 InkWell(
-                    onTap: () => _bumpPoison(i, -1),
-                    child: const Padding(
-                        padding: EdgeInsets.all(2),
-                        child: Icon(Icons.remove, size: 11))),
-                Text('${p.poison}',
-                    style: const TextStyle(
-                        color: AppTheme.textMuted, fontSize: 11)),
-                InkWell(
-                    onTap: () => _bumpPoison(i, 1),
-                    child: const Padding(
-                        padding: EdgeInsets.all(2),
-                        child: Icon(Icons.add, size: 11))),
-              ],
-            ),
-          ],
+                  onTap: () => _lifeMenu(i, upsideDown: upsideDown),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                        p.counters.entries
+                            .map((e) => '${e.key} ${e.value}')
+                            .join(' • '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: AppTheme.textMuted, fontSize: 10)),
+                  ),
+                ),
+            ],
+          ),
+        ),
         ),
       ),
     );
   }
 
-  /// Menu de vida (segurar no número): presets e valor personalizado.
-  Future<void> _lifeMenu(int i) async {
+  /// Menu de vida (segurar no número): presets e valor personalizado,
+  /// mais veneno, dano de comandante (por oponente) e contadores extras.
+  /// Vida fecha o menu ao escolher; contadores ajustam ao vivo.
+  Future<void> _lifeMenu(int i, {bool upsideDown = false}) async {
     if (i < 0 || i >= _players.length) return;
     final custom = TextEditingController();
+    final newCounterC = TextEditingController();
     final pick = await showModalBottomSheet<String>(
       context: context,
       // Sobe junto com o teclado (viewInsets) em vez de ficar embaixo dele.
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-          padding:
-              EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                child: Text(
-                    '${AppLocale.t('life_title')}: ${_players[i].name} (${_players[i].life})',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 15)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) {
+          if (i < 0 || i >= _players.length) {
+            return const SizedBox.shrink();
+          }
+          final p = _players[i];
+          // Linha de ajuste − n + reutilizada p/ veneno e extras.
+          Widget stepperRow(String value, VoidCallback minus,
+              VoidCallback plus,
+              {VoidCallback? onDelete}) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                      icon: const Icon(Icons.remove_circle_outline),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 40, minHeight: 40),
+                      onPressed: () {
+                        minus();
+                        setD(() {});
+                      }),
+                  SizedBox(
+                    width: 44,
+                    child: Text(value,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton(
+                      icon: const Icon(Icons.add_circle,
+                          color: AppTheme.gold),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                          minWidth: 40, minHeight: 40),
+                      onPressed: () {
+                        plus();
+                        setD(() {});
+                      }),
+                  if (onDelete != null)
+                    IconButton(
+                        icon: const Icon(Icons.close,
+                            size: 18, color: Colors.redAccent),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                            minWidth: 40, minHeight: 40),
+                        onPressed: () {
+                          onDelete();
+                          setD(() {});
+                        }),
+                ],
               ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    for (final d in [-10, -5, -1, 1, 5, 10])
-                      ActionChip(
-                        label: Text('${d > 0 ? '+' : ''}$d'),
-                        onPressed: () => Navigator.pop(ctx, 'd:$d'),
+            );
+          }
+
+          return RotatedBox(
+            quarterTurns: upsideDown ? 2 : 0,
+            child: SafeArea(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Text(
+                        '${AppLocale.t('life_title')}: ${p.name} (${p.life})',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 4),
+                    child: Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        for (final d in [-10, -5, -1, 1, 5, 10])
+                          ActionChip(
+                            label: Text('${d > 0 ? '+' : ''}$d'),
+                            onPressed: () => Navigator.pop(ctx, 'd:$d'),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 4),
+                    child: TextField(
+                      controller: custom,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                          labelText: AppLocale.t('life_custom')),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(ctx, 'reset'),
+                            child: Text(AppLocale.t('life_reset')),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () =>
+                                Navigator.pop(ctx, 'c:${custom.text}'),
+                            child: Text(AppLocale.t('common_apply')),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 16),
+                  // ---- veneno ----
+                  Text('☠ ${AppLocale.t('life_poison')}',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                  stepperRow('${p.poison}',
+                      () => _bumpPoison(i, -1), () => _bumpPoison(i, 1)),
+                  const Divider(height: 16),
+                  // ---- comandante (um por oponente) ----
+                  Text(AppLocale.t('life_commander'),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                  Text(AppLocale.t('life_commander_sub'),
+                      style: const TextStyle(
+                          color: AppTheme.textMuted, fontSize: 11)),
+                  for (var j = 0; j < _players.length; j++)
+                    if (j != i)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(_players[j].name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 13)),
+                            ),
+                            IconButton(
+                                icon: const Icon(
+                                    Icons.remove_circle_outline),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 40, minHeight: 40),
+                                onPressed: () {
+                                  _bumpCommander(i, _players[j].name, -1);
+                                  setD(() {});
+                                }),
+                            SizedBox(
+                              width: 40,
+                              child: Text(
+                                  '${p.commander[_players[j].name] ?? 0}',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: (p.commander[_players[j].name] ??
+                                                  0) >=
+                                              _MatchPlayer.commanderLethal
+                                          ? Colors.redAccent
+                                          : AppTheme.text)),
+                            ),
+                            IconButton(
+                                icon: const Icon(Icons.add_circle,
+                                    color: AppTheme.gold),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 40, minHeight: 40),
+                                onPressed: () {
+                                  _bumpCommander(i, _players[j].name, 1);
+                                  setD(() {});
+                                }),
+                          ],
+                        ),
                       ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: TextField(
-                  controller: custom,
-                  keyboardType: TextInputType.number,
-                  decoration:
-                      InputDecoration(labelText: AppLocale.t('life_custom')),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop(ctx, 'reset'),
-                        child: Text(AppLocale.t('life_reset')),
+                  const Divider(height: 16),
+                  // ---- extras (Energia, Experiência...) ----
+                  Text(AppLocale.t('life_counters'),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                  for (final e in p.counters.entries)
+                    Padding(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(e.key,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 13)),
+                          ),
+                          IconButton(
+                              icon:
+                                  const Icon(Icons.remove_circle_outline),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 40, minHeight: 40),
+                              onPressed: () {
+                                _bumpPlayerCounter(i, e.key, -1);
+                                setD(() {});
+                              }),
+                          SizedBox(
+                            width: 40,
+                            child: Text('${e.value}',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                          IconButton(
+                              icon: const Icon(Icons.add_circle,
+                                  color: AppTheme.gold),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 40, minHeight: 40),
+                              onPressed: () {
+                                _bumpPlayerCounter(i, e.key, 1);
+                                setD(() {});
+                              }),
+                          IconButton(
+                              icon: const Icon(Icons.close,
+                                  size: 18, color: Colors.redAccent),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 40, minHeight: 40),
+                              onPressed: () {
+                                _removePlayerCounter(i, e.key);
+                                setD(() {});
+                              }),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx, 'c:${custom.text}'),
-                        child: Text(AppLocale.t('common_apply')),
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: newCounterC,
+                            textCapitalization:
+                                TextCapitalization.words,
+                            decoration: InputDecoration(
+                                labelText:
+                                    AppLocale.t('life_counter_hint')),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () {
+                            final name = newCounterC.text.trim();
+                            if (name.isEmpty) return;
+                            newCounterC.clear();
+                            _bumpPlayerCounter(i, name, 0);
+                            setD(() {});
+                          },
+                          child: Text(AppLocale.t('common_add')),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+            ),
+          );
+        },
       ),
     );
     _laterDispose(custom);
+    _laterDispose(newCounterC);
     if (pick == null) return;
     if (pick.startsWith('d:')) {
       _bumpLife(i, int.tryParse(pick.substring(2)) ?? 0);
@@ -6363,27 +9886,25 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Linha de mana de um jogador: toque +1, segurar -1.
   /// O ✕ limpa SÓ a própria mana (cada aparelho, a sua).
-  Widget _manaRow(String player) {
+  /// O nome já aparece ao lado da quantia de cartas acima, então aqui
+  /// vão só os pontos (+ extras). Compacta usa pontos menores.
+  /// [upsideDown] gira o quadro de marcadores p/ o player de cima.
+  Widget _manaRow(String player,
+      {bool compact = false, Widget? trailing, bool upsideDown = false}) {
     final pool = _mana[player] ?? {};
     final isMine = _isMinePlayer(player);
+    final dotR = compact ? 7.0 : 10.0;
+    final dotGap = compact ? 2.0 : 4.0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Row(
         children: [
-          SizedBox(
-            width: 72,
-            child: Text(player,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
-          ),
           for (final c in _manaColors)
             GestureDetector(
               onTap: () => _manaAdd(player, c, 1),
               onLongPress: () => _manaAdd(player, c, -1),
               child: Container(
-                margin: const EdgeInsets.only(right: 4),
+                margin: EdgeInsets.only(right: dotGap),
                 padding: const EdgeInsets.all(2),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
@@ -6392,11 +9913,11 @@ class _PlayPageState extends State<PlayPage> {
                           (pool[c] ?? 0) > 0 ? AppTheme.gold : AppTheme.border),
                 ),
                 child: CircleAvatar(
-                  radius: 10,
+                  radius: dotR,
                   backgroundColor: _manaDots[c],
                   child: Text('${pool[c] ?? 0}',
                       style: TextStyle(
-                          fontSize: 10,
+                          fontSize: compact ? 9 : 10,
                           fontWeight: FontWeight.bold,
                           color: _manaDarkText(c)
                               ? Colors.black87
@@ -6404,20 +9925,30 @@ class _PlayPageState extends State<PlayPage> {
                 ),
               ),
             ),
-          const Spacer(),
-          if (isMine)
-            InkWell(
-              onTap: () {
-                for (final c in _manaColors) {
-                  _manaAdd(player, c, -99);
-                }
-              },
-              child: const Padding(
-                padding: EdgeInsets.all(4),
-                child: Icon(Icons.delete_sweep,
-                    size: 16, color: AppTheme.textFaint),
+          if (trailing != null) ...[
+            const SizedBox(width: 6),
+            trailing,
+          ] else ...[
+            const Spacer(),
+            if (isMine)
+              InkWell(
+                onTap: () {
+                  for (final c in _manaColors) {
+                    _manaAdd(player, c, -99);
+                  }
+                },
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.delete_sweep,
+                      size: 16, color: AppTheme.textFaint),
+                ),
               ),
-            ),
+          ],
+          // Marcadores da mesa escondidos aqui: ícone discreto ao lado
+          // da mana (com selo de quantidade); abre o quadro da mesa.
+          // Respiro antes p/ não grudar no limpar-mana (ou no +).
+          const SizedBox(width: 8),
+          _markerBtn(upsideDown: upsideDown),
         ],
       ),
     );
@@ -6496,6 +10027,262 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Opções ao tocar na ficha: inclui a resolução guiada quando a ficha
   /// possui uma ação que o auxiliar conhece.
+  /// Informações da carta (SEGURAR na mesa): arte, custo, tipo,
+  /// habilidades, P/T, descrição, marcadores e dono. Só leitura, com
+  /// atalhos para Opções e Virar — não atrapalha o toque (que vira).
+  Future<void> _tokenInfo(_Token t, {bool upsideDown = false}) async {
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) {
+          // Resolve a pilha e a líder A CADA build: viram objetos novos
+          // no eco da rede; o [t] original só dá o molde (nunca muda).
+          final mates = _stackMates(t);
+          final show = mates.isNotEmpty ? mates.first : t;
+          final base = '${show.power}/${show.toughness}';
+          final eff = '${effP(show)}/${effT(show)}';
+          final isUtility = show.power == 0 && show.toughness == 0;
+          // Fileira rápida − n + (cópias ou +1/+1): repete sem fechar.
+          Widget quickStep(
+              {required String title,
+              required String value,
+              required VoidCallback minus,
+              required VoidCallback plus}) {
+            btn(IconData icon, VoidCallback fn) => IconButton(
+                  icon: Icon(icon, size: 26),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                      minWidth: 48, minHeight: 48),
+                  onPressed: fn,
+                );
+            return Expanded(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppTheme.border),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            color: AppTheme.textMuted, fontSize: 11)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        btn(Icons.remove_circle_outline, minus),
+                        SizedBox(
+                          width: 52,
+                          child: Text(value,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                        btn(Icons.add_circle, plus),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          void refresh() {
+            if (ctx.mounted) setD(() {});
+          }
+
+          return RotatedBox(
+            quarterTurns: upsideDown ? 2 : 0,
+            child: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        quickStep(
+                          title: AppLocale.t('token_more'),
+                          value: '×${mates.length}',
+                          minus: () {
+                            _stackCopyBump(t, -1);
+                            if (_stackMates(t).isEmpty) {
+                              Navigator.pop(ctx);
+                            } else {
+                              refresh();
+                            }
+                          },
+                          plus: () {
+                            _stackCopyBump(t, 1);
+                            refresh();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        quickStep(
+                          title: '+1/+1',
+                          value: '+${show.counters}',
+                          minus: () {
+                            _tokenCounterQuick(show, -1);
+                            refresh();
+                          },
+                          plus: () {
+                            _tokenCounterQuick(show, 1);
+                            refresh();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (show.art.isNotEmpty)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: CachedNetworkImage(
+                          imageUrl: show.art,
+                          height: 170,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) =>
+                              const SizedBox.shrink(),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(show.name,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 17)),
+                        ),
+                        if (show.cost.trim().isNotEmpty)
+                          ManaCostRow(_normalizeCost(show.cost), size: 17),
+                      ],
+                    ),
+                    if (show.type.trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(show.type,
+                            style: const TextStyle(
+                                color: AppTheme.textMuted, fontSize: 12)),
+                      ),
+                    if (show.keywords.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final k in show.keywords)
+                              Chip(
+                                label: Text(AppLocale.t('ab_$k'),
+                                    style:
+                                        const TextStyle(fontSize: 11)),
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                              ),
+                          ],
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                          isUtility
+                              ? '◆ ${AppLocale.t('token_utility')}'
+                              : (eff == base
+                                  ? 'P/T $eff'
+                                  : 'P/T $eff (${AppLocale.t('token_base')} $base)'),
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 14)),
+                    ),
+                    if (show.description.trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(show.description,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (show.counters != 0 ||
+                        show.minus != 0 ||
+                        show.loyalty != 0 ||
+                        show.charge != 0 ||
+                        show.marks.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                            _tokenMarksSummary(show),
+                            style: const TextStyle(
+                                color: AppTheme.textMuted, fontSize: 12)),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                          '${show.owner.isEmpty ? '' : '${show.owner} • '}${show.tapped ? AppLocale.t('token_tapped') : AppLocale.t('token_untapped')}',
+                          style: const TextStyle(
+                              color: AppTheme.textMuted, fontSize: 12)),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: Icon(show.tapped
+                                ? Icons.rotate_right
+                                : Icons.rotate_right_outlined,
+                                size: 18),
+                            label: Text(show.tapped
+                                ? AppLocale.t('token_untap')
+                                : AppLocale.t('token_tap')),
+                            onPressed: () =>
+                                Navigator.pop(context, 'tap'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.tune, size: 18),
+                            label:
+                                Text(AppLocale.t('token_options')),
+                            onPressed: () =>
+                                Navigator.pop(context, 'options'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (pick == 'tap') {
+      _tokenTap(t);
+    } else if (pick == 'options') {
+      await _tokenOptions(t, upsideDown: upsideDown);
+    }
+  }
+
+  /// Resumo dos marcadores p/ o sheet de info ("+3/+3, −1/−1...").
+  String _tokenMarksSummary(_Token t) {
+    final bits = <String>[];
+    if (t.counters != 0) bits.add('+${t.counters}/+${t.counters}');
+    if (t.minus != 0) bits.add('−${t.minus}/−${t.minus}');
+    if (t.loyalty != 0) bits.add('❖${t.loyalty}');
+    if (t.charge != 0) bits.add('⬢${t.charge}');
+    for (final m in t.marks) {
+      bits.add('${m.count}× ${m.label}${m.untilEOT ? ' ⏳' : ''}');
+    }
+    return bits.join(' • ');
+  }
+
   Future<void> _tokenOptions(_Token t, {bool upsideDown = false}) async {
     final action = _utilityAction(t);
     // Sheet compacto: abraça o conteúdo (nunca estica até o topo) e
@@ -6565,6 +10352,13 @@ class _PlayPageState extends State<PlayPage> {
                     onTap: () => Navigator.pop(context, 'counters')),
                 ListTile(
                     dense: true,
+                    leading: const Icon(Icons.bookmark_add_outlined,
+                        color: AppTheme.gold),
+                    title: Text(AppLocale.t('token_marker')),
+                    subtitle: Text(AppLocale.t('token_marker_sub')),
+                    onTap: () => Navigator.pop(context, 'marker')),
+                ListTile(
+                    dense: true,
                     leading: const Icon(Icons.image),
                     title: Text(AppLocale.t('token_art')),
                     onTap: () => Navigator.pop(context, 'art')),
@@ -6625,6 +10419,9 @@ class _PlayPageState extends State<PlayPage> {
         break;
       case 'counters':
         await _countersSheet(t, upsideDown: upsideDown);
+        break;
+      case 'marker':
+        await _markerDialog(tokenId: t.id, upsideDown: upsideDown);
         break;
       case 'art':
         await _artSearch(t, upsideDown: upsideDown);
@@ -6816,6 +10613,7 @@ class _PlayPageState extends State<PlayPage> {
         builder: (_, setD) => RotatedBox(
           quarterTurns: upsideDown ? 2 : 0,
           child: AlertDialog(
+            scrollable: true,
             title: Text(AppLocale.t('su_add_more').replaceAll('{n}', t.name)),
             content: Column(mainAxisSize: MainAxisSize.min, children: [
               Wrap(spacing: 6, children: [
@@ -6854,7 +10652,10 @@ class _PlayPageState extends State<PlayPage> {
       _createPreset(t.name, t.power, t.toughness, t.owner,
           description: t.description,
           quantity: count,
-          art: t.art.isNotEmpty ? t.art : _artForName(t.name));
+          art: t.art.isNotEmpty ? t.art : _artForName(t.name),
+          cost: t.cost,
+          type: t.type,
+          keywords: [...t.keywords]);
     }
   }
 
@@ -7095,6 +10896,7 @@ class _PlayPageState extends State<PlayPage> {
         builder: (_, setD) => RotatedBox(
           quarterTurns: upsideDown ? 2 : 0,
           child: AlertDialog(
+            scrollable: true,
             title: Text(AppLocale.t('mk_new')),
             content: Column(mainAxisSize: MainAxisSize.min, children: [
               TextField(
@@ -7312,6 +11114,13 @@ class _PlayPageState extends State<PlayPage> {
 
   /// Busca arte oficial da ficha no Scryfall (t:token), no idioma escolhido.
   /// Se não existir nesse idioma, cai para qualquer idioma que tenha.
+  /// Palavra do oráculo em inglês p/ o filtro `o:` do Scryfall.
+  static String _abilityOracle(String key) => switch (key) {
+        'first_strike' => 'first strike',
+        'double_strike' => 'double strike',
+        _ => key.replaceAll('_', ' '),
+      };
+
   Future<void> _artSearch(_Token t, {bool upsideDown = false}) async {
     const langOptions = ['all', 'pt', 'en', 'es', 'ja', 'zhs'];
     var artLang = 'all';
@@ -7325,6 +11134,26 @@ class _PlayPageState extends State<PlayPage> {
     bool loading = true;
     String? error;
     var attempt = 0;
+    // Filtros Scryfall (vêm preenchidos da ficha: P/T e habilidades).
+    final pC = TextEditingController(
+        text: t.power > 0 ? '${t.power}' : '');
+    final tC = TextEditingController(
+        text: t.toughness > 0 ? '${t.toughness}' : '');
+    final selAbs = <String>{...t.keywords};
+    String mods() {
+      final b = StringBuffer();
+      final p = int.tryParse(pC.text.trim());
+      final tt = int.tryParse(tC.text.trim());
+      if (p != null) b.write(' pow=$p');
+      if (tt != null) b.write(' tou=$tt');
+      // SEM espaço após o ':' — `o: flying` vira texto livre "flying"
+      // e zera tudo (404); o certo é `o:flying` / `o:"first strike"`.
+      for (final k in selAbs) {
+        final word = _abilityOracle(k);
+        b.write(word.contains(' ') ? ' o:"$word"' : ' o:$word');
+      }
+      return b.toString();
+    }
 
     await showModalBottomSheet(
       context: context,
@@ -7335,7 +11164,8 @@ class _PlayPageState extends State<PlayPage> {
           void kickoff() {
             attempt++;
             final my = attempt;
-            _findTokenArt(t.name, lang: artLang).then((r) {
+            final m = mods();
+            _findTokenArt(t.name, lang: artLang, mods: m).then((r) {
               if (!ctx.mounted || my != attempt) return;
               setD(() {
                 results = r.take(15).toList();
@@ -7421,6 +11251,75 @@ class _PlayPageState extends State<PlayPage> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 8),
+                        // Filtros: P/T + habilidades (ex. dragão 5/5
+                        // voando). Vêm da ficha; filtrar rebusca.
+                        Row(
+                          children: [
+                            SizedBox(
+                              width: 64,
+                              child: TextField(
+                                controller: pC,
+                                keyboardType: TextInputType.number,
+                                decoration: InputDecoration(
+                                    labelText: AppLocale.t('art_pow'),
+                                    isDense: true),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 64,
+                              child: TextField(
+                                controller: tC,
+                                keyboardType: TextInputType.number,
+                                decoration: InputDecoration(
+                                    labelText: AppLocale.t('art_tou'),
+                                    isDense: true),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.filter_alt,
+                                  size: 20, color: AppTheme.gold),
+                              tooltip: AppLocale.t('art_filter'),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 36, minHeight: 36),
+                              onPressed: () {
+                                setD(() {
+                                  results = [];
+                                  error = null;
+                                  loading = true;
+                                });
+                                kickoff();
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final k in _Token.abilityKeys)
+                              FilterChip(
+                                label: Text(AppLocale.t('ab_$k'),
+                                    style:
+                                        const TextStyle(fontSize: 11)),
+                                selected: selAbs.contains(k),
+                                visualDensity: VisualDensity.compact,
+                                onSelected: (_) {
+                                  setD(() {
+                                    if (!selAbs.remove(k)) selAbs.add(k);
+                                    results = [];
+                                    error = null;
+                                    loading = true;
+                                  });
+                                  kickoff();
+                                },
+                              ),
+                          ],
+                        ),
                       ]),
                     ),
                     if (loading)
@@ -7473,17 +11372,45 @@ class _PlayPageState extends State<PlayPage> {
                           itemBuilder: (_, i) {
                             final d = results[i];
                             final u = ScryfallService.extractImageUrl(d);
+                            final lg = (d['lang'] ?? '').toString().toUpperCase();
                             return GestureDetector(
                               onTap: () => Navigator.pop(ctx, u),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
-                                child: u == null || u.isEmpty
-                                    ? const Icon(Icons.style)
-                                    : CachedNetworkImage(
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (u == null || u.isEmpty)
+                                      const Icon(Icons.style)
+                                    else
+                                      CachedNetworkImage(
                                         imageUrl: u,
                                         fit: BoxFit.cover,
                                         memCacheWidth: 300,
                                       ),
+                                    if (lg.isNotEmpty)
+                                      Positioned(
+                                        left: 4,
+                                        bottom: 4,
+                                        child: Container(
+                                          padding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 5, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.65),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                          ),
+                                          child: Text(lg,
+                                              style: const TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white)),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -7497,6 +11424,8 @@ class _PlayPageState extends State<PlayPage> {
         },
       ),
     ).then((url) {
+      _laterDispose(pC);
+      _laterDispose(tC);
       if (url is String && url.isNotEmpty) {
         _setTokenArt(t, url);
       }
@@ -7507,8 +11436,9 @@ class _PlayPageState extends State<PlayPage> {
   /// nome usado na mesa e depois a tradução dos presets em português.
   /// `lang`: idioma preferido ('all' = qualquer um). Se nada for achado
   /// nesse idioma, tenta de novo sem filtro (pega o que existir).
+  /// `mods`: restinho Scryfall (ex. ' pow=5 tou=5 o:"flying"').
   Future<List<Map<String, dynamic>>> _findTokenArt(String tokenName,
-      {String lang = 'all'}) async {
+      {String lang = 'all', String mods = ''}) async {
     final normalized = ScryfallService.normalize(tokenName);
     const englishNames = {
       'tesouro': 'Treasure',
@@ -7543,16 +11473,25 @@ class _PlayPageState extends State<PlayPage> {
       'urso': 'Bear',
       'rinoceronte': 'Rhino',
     };
-    final terms = <String>[tokenName];
+    final terms = <String>[];
     final english = englishNames[normalized];
-    if (english != null && !terms.contains(english)) terms.add(english);
+    // O filtro `t:` do Scryfall só entende inglês: tentar "t:token Tesouro"
+    // sempre dá 404 antes de cair no inglês. Quando há tradução conhecida,
+    // tenta o inglês PRIMEIRO (acerta de 1ª e evita o 404 + requests extras).
+    if (english != null) terms.add(english);
+    if (!terms.contains(tokenName)) terms.add(tokenName);
     Object? lastError;
     // 1ª passada: idioma preferido. 2ª: qualquer idioma que tenha.
+    // Sem bônus de coletor (dígitos de pow/tou não são nº) e, em
+    // 'all', separando por idioma p/ mostrar PT/EN/ES… na grade.
     for (final passLang in [lang, if (lang != 'all') 'all']) {
       for (final term in terms) {
         try {
-          final found = await ScryfallService.instance
-              .search('t:token $term', lang: passLang);
+          final found = await ScryfallService.instance.search(
+              't:token $term$mods',
+              lang: passLang,
+              scoreCollector: false,
+              byLanguage: true);
           if (found.isNotEmpty) return found;
         } catch (e) {
           lastError = e;
@@ -7570,6 +11509,9 @@ class _PlayPageState extends State<PlayPage> {
     // A arte é por NOME e vale para os dois players: atualiza todas as
     // fichas com esse nome, sejam minhas ou do oponente.
     final key = t.name.trim().toLowerCase();
+    // Salva no aparelho: próxima mesa com esse nome já nasce com arte,
+    // sem precisar buscar de novo (vale p/ host e guest).
+    _rememberArt(t.name, url);
     final matching = _tokens
         .where((other) => other.name.trim().toLowerCase() == key)
         .toList();
@@ -7641,13 +11583,29 @@ class _PlayPageState extends State<PlayPage> {
   /// Virada mantém o tamanho paisagem (h×w) mas centralizada
   /// verticalmente no slot — antes ficava grudada no topo. Empilhada
   /// ou não, o centro vertical fica fixo.
+  /// Estilo da mesa pelo DONO da ficha (para pilhas sem contexto de
+  /// zona): acha o jogador pelo nome; fora da partida, global.
+  _TableStyle _ownerStyle(String owner) {
+    final n = owner.trim().toLowerCase();
+    if (n.isNotEmpty) {
+      for (final p in _players) {
+        if (p.name.trim().toLowerCase() == n) return _styleFor(p);
+      }
+    }
+    return _tableStyle;
+  }
+
   Widget _tokenStackMini(_TokenStack stack,
-      {double w = 110, double h = 154, bool upsideDown = false}) {
+      {double w = 110,
+      double h = 154,
+      bool upsideDown = false,
+      _TableStyle? style}) {
     // Quantas cartas visíveis: a frente + cópias atrás, até o máximo
     // dos Ajustes (1 = só a frente).
     final layers =
         (stack.count - 1).clamp(0, PlayPrefs.stackVisible.value - 1);
     final lead = stack.lead;
+    final st = style ?? _ownerStyle(lead.owner);
     // Virada de verdade: a carta gira 90º (ocupa h×w em vez de w×h).
     final rot = lead.tapped && PlayPrefs.rotateTapped.value;
     final fw = rot ? h : w;
@@ -7708,7 +11666,7 @@ class _PlayPageState extends State<PlayPage> {
                               decoration: BoxDecoration(
                             color: lead.tapped
                                 ? AppTheme.goldSoft
-                                : _tableStyle.panel,
+                                : st.panel,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                                 color: AppTheme.gold, width: 1.2),
@@ -7718,17 +11676,18 @@ class _PlayPageState extends State<PlayPage> {
                     ]),
             ),
           ),
-        Positioned(
-          left: 0,
-          top: 0,
-          width: fw,
-          height: fh,
-          child: _tokenMini(lead,
-              w: w,
-              h: h,
-              stackedCount: stack.count,
-              upsideDown: upsideDown),
-        ),
+          Positioned(
+            left: 0,
+            top: 0,
+            width: fw,
+            height: fh,
+            child: _tokenMini(lead,
+                w: w,
+                h: h,
+                stackedCount: stack.count,
+                upsideDown: upsideDown,
+                style: st),
+          ),
       ],
     );
     // Reta: layout original intocado. Virada: centraliza verticalmente
@@ -7755,17 +11714,24 @@ class _PlayPageState extends State<PlayPage> {
   /// Mini ficha (fileiras laterais): nome centralizado + P/T + descrição.
   /// Fichas utilitárias (Tesouro, Pista...) têm o botão de resolver no
   /// centro inferior, ao lado do P/T e da quantidade da pilha.
-  /// Toque abre as opções (editar, ativar, buff, arte, remover).
+  /// Toque vira/desvira; SEGURAR mostra as informações. Opções (editar,
+  /// ativar, buff, arte, remover) ficam no sheet de info e nos selos.
   Widget _tokenMini(_Token t,
       {double w = 110,
       double h = 154,
       int stackedCount = 1,
-      bool upsideDown = false}) {
+      bool upsideDown = false,
+      _TableStyle? style}) {
+    final st = style ?? _ownerStyle(t.owner);
     final eff = '${effP(t)}/${effT(t)}';
     final utility = t.power == 0 && t.toughness == 0;
     final action = _utilityAction(t);
     // "Sempre ocultar" (Ajustes) ou a pilha oculta: esconde o nome.
     final namesHidden = PlayPrefs.hideTokenNames.value || t.hideName == true;
+    // Habilidades: faixa sob o nome ou pílula no centro (Ajustes).
+    final kwCenter = PlayPrefs.keywordPos.value == 'center';
+    final kwText =
+        t.keywords.map((k) => AppLocale.t('ab_$k')).join(' • ');
     final canResolve = action != _UtilityAction.none && !t.tapped;
     // Virada de verdade (Ajustes): gira 90º como no jogo físico.
     // Sem a opção, mantém o selo VIRADA sobre a carta reta.
@@ -7774,15 +11740,15 @@ class _PlayPageState extends State<PlayPage> {
       width: w,
       height: h,
       child: InkWell(
-        // Segurar vira/desvira direto; toque abre as opções.
-        onTap: () => _tokenOptions(t, upsideDown: upsideDown),
-        onLongPress: () => _tokenTap(t),
+        // Toque vira/desvira direto; segurar mostra as informações.
+        onTap: () => _tokenTap(t),
+        onLongPress: () => _tokenInfo(t, upsideDown: upsideDown),
         borderRadius: BorderRadius.circular(12),
         child: Stack(children: [
           Positioned.fill(
             child: Card(
               margin: EdgeInsets.zero,
-              color: t.tapped ? AppTheme.goldSoft : _tableStyle.panel,
+              color: t.tapped ? AppTheme.goldSoft : st.panel,
               clipBehavior: Clip.antiAlias,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -7804,8 +11770,47 @@ class _PlayPageState extends State<PlayPage> {
                   )
                 else
                   Container(
-                      color: t.tapped ? AppTheme.goldSoft : _tableStyle.panel),
-                if (t.art.isEmpty && t.description.isNotEmpty)
+                      color: t.tapped ? AppTheme.goldSoft : st.panel),
+                // Habilidades no CENTRO (opção dos Ajustes): pílula com
+                // letreiros infinitos de habilidades + descrição.
+                if (kwCenter &&
+                    (t.keywords.isNotEmpty ||
+                        t.description.trim().isNotEmpty))
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 30, 8, 34),
+                      child: Container(
+                        constraints:
+                            BoxConstraints(maxWidth: (w - 16).clamp(40.0, 600.0)),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (t.keywords.isNotEmpty)
+                              Marquee(kwText,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 11,
+                                      color: Colors.white)),
+                            if (t.description.trim().isNotEmpty)
+                              Marquee(t.description.trim(),
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      height: 1.15,
+                                      color: Colors.white70)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                if (!kwCenter &&
+                    t.art.isEmpty &&
+                    t.description.isNotEmpty)
                   Center(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(8, 30, 8, 34),
@@ -7844,12 +11849,38 @@ class _PlayPageState extends State<PlayPage> {
                       .withValues(alpha: t.art.isNotEmpty ? 0.55 : 0.25),
                   borderRadius: BorderRadius.circular(7),
                 ),
-                child: Text(t.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 13)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(t.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13)),
+                    // Faixa sob o nome (padrão): letreiro infinito —
+                    // anda sozinho quando passa da caixa (e dá p/ arrastar).
+                    if (t.keywords.isNotEmpty && !kwCenter)
+                      Marquee(kwText,
+                          style: const TextStyle(
+                              fontSize: 9, color: Colors.white70)),
+                  ],
+                ),
+              ),
+            ),
+          // Custo de mana no canto superior direito (pips oficiais).
+          if (t.cost.trim().isNotEmpty)
+            Positioned(
+              top: namesHidden ? 4 : 30,
+              right: 5,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ManaCostRow(_normalizeCost(t.cost),
+                    size: 13, spacing: 1),
               ),
             ),
           // Selos no canto (tocar abre Marcadores): lealdade, carga
@@ -7923,6 +11954,34 @@ class _PlayPageState extends State<PlayPage> {
       height: realRotate ? w : h,
       child: body,
     );
+  }
+
+  /// Normaliza custo digitado ("2WW", "X", "{2}{G}") para pips "{2}{W}{W}".
+  /// Híbrido ("W/U") vira dois pips separados — simplificação consciente.
+  static String _normalizeCost(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty) return '';
+    if (s.contains('{')) return s;
+    final buf = StringBuffer();
+    final up = s.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+    var i = 0;
+    while (i < up.length) {
+      final ch = up[i];
+      if (RegExp(r'\d').hasMatch(ch)) {
+        var j = i;
+        while (j < up.length && RegExp(r'\d').hasMatch(up[j])) {
+          j++;
+        }
+        buf.write('{${up.substring(i, j)}}');
+        i = j;
+      } else if ('WUBRGCSXYZ'.contains(ch)) {
+        buf.write('{$ch}');
+        i++;
+      } else {
+        i++;
+      }
+    }
+    return buf.toString();
   }
 
   /// Ficha GRANDE: P/T efetivo em destaque, dono, marcadores,
@@ -8072,12 +12131,30 @@ class _PlayPageState extends State<PlayPage> {
 }
 
 /// Botão com pressão contínua acelerada (privado do arquivo).
+/// [minHeight]/[minWidth] + [expand] viram zonas grandes de toque
+/// (ex. metades −/+ da vida); [alignment] encosta o ícone na borda.
+/// [onHoldStart]/[onHoldEnd] avisam o gesto completo (p/ mostrar o
+/// quanto mudou entre apertar e soltar).
 class _HoldButton extends StatefulWidget {
   final IconData icon;
   final VoidCallback onTap;
   final void Function(int tick) onStep;
+  final double minHeight;
+  final bool expand;
+  final double iconSize;
+  final Alignment alignment;
+  final VoidCallback? onHoldStart;
+  final VoidCallback? onHoldEnd;
   const _HoldButton(
-      {required this.icon, required this.onTap, required this.onStep});
+      {required this.icon,
+      required this.onTap,
+      required this.onStep,
+      this.minHeight = 0,
+      this.expand = false,
+      this.iconSize = 20,
+      this.alignment = Alignment.center,
+      this.onHoldStart,
+      this.onHoldEnd});
 
   @override
   State<_HoldButton> createState() => _HoldButtonState();
@@ -8085,6 +12162,9 @@ class _HoldButton extends StatefulWidget {
 
 class _HoldButtonState extends State<_HoldButton> {
   Timer? _timer;
+  // Segurada válida em curso (start disparou): o cancel pode chegar
+  // sem start (rolagem) — sem isso o onHoldEnd mentiria o delta.
+  bool _held = false;
 
   void _start() {
     var tick = 0;
@@ -8107,6 +12187,19 @@ class _HoldButtonState extends State<_HoldButton> {
     _timer = null;
   }
 
+  void _begin() {
+    _held = true;
+    _start();
+    widget.onHoldStart?.call();
+  }
+
+  void _end() {
+    _stop();
+    if (!_held) return;
+    _held = false;
+    widget.onHoldEnd?.call();
+  }
+
   @override
   void dispose() {
     _stop();
@@ -8115,15 +12208,25 @@ class _HoldButtonState extends State<_HoldButton> {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: widget.onTap,
-      onLongPressStart: (_) => _start(),
-      onLongPressEnd: (_) => _stop(),
-      onLongPressCancel: _stop,
+    final content = Container(
+      constraints: BoxConstraints(minHeight: widget.minHeight),
+      alignment: widget.alignment,
       child: Padding(
         padding: const EdgeInsets.all(4),
-        child: Icon(widget.icon, color: AppTheme.gold, size: 20),
+        child:
+            Icon(widget.icon, color: AppTheme.gold, size: widget.iconSize),
       ),
+    );
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onTap,
+      onLongPressStart: (_) => _begin(),
+      onLongPressEnd: (_) => _end(),
+      onLongPressCancel: _end,
+      // Largura total da zona (o pai usa stretch p/ altura total).
+      child: widget.expand
+          ? SizedBox(width: double.infinity, child: content)
+          : content,
     );
   }
 }

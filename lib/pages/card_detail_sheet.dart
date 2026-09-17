@@ -381,9 +381,15 @@ class _CardDetailSheetState extends State<CardDetailSheet> {
           const SizedBox(height: 4),
           Row(
             children: [
-              Text('${AppLocale.t('cd_qty')}: '),
+              Flexible(
+                child: Text('${AppLocale.t('cd_qty')}: ',
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
               IconButton(
                   icon: const Icon(Icons.remove_circle_outline),
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 40, minHeight: 40),
                   onPressed: _decrementWithConfirm),
               InkWell(
                 onTap: _editQuantity,

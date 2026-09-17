@@ -248,8 +248,15 @@ class ScryfallService {
   /// `oracle_id` (preferindo PT > EN) e ordenamos por relevância.
   ///
   /// `lang`: filtra os printings pelo idioma ('all' = todos).
+  /// `scoreCollector`: bônus p/ nº de coletor citado (modo foto, "266").
+  /// Desligar na busca de arte: os dígitos vêm de `pow=`/`tou=` e o
+  /// bônus elegia impressão inglesa só por ter "5" no número.
+  /// `byLanguage`: separa variantes por idioma (escolha de arte mostra
+  /// PT/EN/ES… em vez de colapsar tudo numa só).
   Future<List<Map<String, dynamic>>> search(String query,
-      {String lang = 'all'}) async {
+      {String lang = 'all',
+      bool scoreCollector = true,
+      bool byLanguage = false}) async {
     final q = sanitizeQuery(query);
     if (q.isEmpty) return [];
     await _throttle();
@@ -279,7 +286,8 @@ class ScryfallService {
           .where((c) => (c['lang'] ?? '').toString() == lang)
           .toList();
     }
-    final result = dedupePrints(data, q);
+    final result =
+        dedupePrints(data, q, scoreCollector: scoreCollector, byLanguage: byLanguage && lang == 'all');
     debugPrint(
         '[Scryfall] search "$q" lang=$lang -> ${data.length} printings, ${result.length} únicas');
     return result;
@@ -505,8 +513,12 @@ class ScryfallService {
   ///  2. o idioma filtrado (PT > EN quando "Todos"),
   /// e ordena: nome que contém a busca primeiro.
   /// Ex.: "floresta 266" mostra a Floresta 266/271, não uma genérica.
+  /// `scoreCollector: false` ignora dígitos (busca de arte: dígitos de
+  /// `pow=`/`tou=` não são nº de coletor). `byLanguage: true` chaveia
+  /// por (oracle_id, idioma) para exibir variantes PT/EN/ES….
   static List<Map<String, dynamic>> dedupePrints(
-      List<Map<String, dynamic>> cards, String query) {
+      List<Map<String, dynamic>> cards, String query,
+      {bool scoreCollector = true, bool byLanguage = false}) {
     final nq = normalize(query.trim());
     final digits =
         RegExp(r'\d+').allMatches(nq).map((m) => m.group(0)!).toList();
@@ -515,7 +527,9 @@ class ScryfallService {
     final best = <String, Map<String, dynamic>>{};
     final bestScore = <String, int>{};
     for (final c in cards) {
-      final key = (c['oracle_id'] ?? c['id']).toString();
+      final oracle = (c['oracle_id'] ?? c['id']).toString();
+      final lang = (c['lang'] ?? '').toString();
+      final key = byLanguage ? '$oracle|$lang' : oracle;
       final name = (c['name'] ?? '').toString();
       final printed = (c['printed_name'] ?? '').toString();
       var rel = 2; // 0 = nome casa com a busca, 2 = resto
@@ -526,10 +540,13 @@ class ScryfallService {
         rel = 0;
       }
       // Bônus: nº de coletor citado ("266" casa "266/271", "266a"...).
+      // Desligado na busca de arte (dígitos de pow/tou não são coletor).
       var bonus = 0;
-      final cn = normalize((c['collector_number'] ?? '').toString());
-      for (final d in digits) {
-        if (cn.isNotEmpty && cn.contains(d)) bonus -= 20;
+      if (scoreCollector) {
+        final cn = normalize((c['collector_number'] ?? '').toString());
+        for (final d in digits) {
+          if (cn.isNotEmpty && cn.contains(d)) bonus -= 20;
+        }
       }
       // Bônus: código/nome do set citado ("dom", "dominaria"...).
       final setCode = normalize((c['set'] ?? '').toString());
@@ -539,7 +556,6 @@ class ScryfallService {
           bonus -= 10;
         }
       }
-      final lang = (c['lang'] ?? '').toString();
       final langScore = lang == 'pt'
           ? 0
           : lang == 'en'
@@ -552,11 +568,14 @@ class ScryfallService {
       }
     }
     final list = best.values.toList();
-    list.sort((a, b) {
-      final ka = (a['oracle_id'] ?? a['id']).toString();
-      final kb = (b['oracle_id'] ?? b['id']).toString();
-      return bestScore[ka]!.compareTo(bestScore[kb]!);
-    });
+    String scoreKey(Map<String, dynamic> m) {
+      final oracle = (m['oracle_id'] ?? m['id']).toString();
+      if (!byLanguage) return oracle;
+      return '$oracle|${(m['lang'] ?? '').toString()}';
+    }
+
+    list.sort((a, b) =>
+        (bestScore[scoreKey(a)] ?? 999).compareTo(bestScore[scoreKey(b)] ?? 999));
     return list;
   }
 }

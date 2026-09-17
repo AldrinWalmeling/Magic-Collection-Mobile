@@ -203,6 +203,61 @@ class _SettingsPageState extends State<SettingsPage> {
                                     ],
                                   ),
                                 ),
+                                ValueListenableBuilder<String>(
+                                  valueListenable: PlayPrefs.keywordPos,
+                                  builder: (_, pos, __) => Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                              Icons.auto_awesome_outlined,
+                                              color: Colors.grey),
+                                          const SizedBox(width: 16),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(AppLocale.t(
+                                                    'settings_keywords')),
+                                                Text(
+                                                    AppLocale.t(
+                                                        'settings_keywords_sub'),
+                                                    style: const TextStyle(
+                                                        color: Colors.grey,
+                                                        fontSize: 12)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Wrap(
+                                        spacing: 8,
+                                        children: [
+                                          ChoiceChip(
+                                            label: Text(AppLocale.t(
+                                                'settings_kw_below')),
+                                            selected: pos != 'center',
+                                            onSelected: (_) =>
+                                                PlayPrefs.setKeywordPos(
+                                                    'below'),
+                                          ),
+                                          ChoiceChip(
+                                            label: Text(AppLocale.t(
+                                                'settings_kw_center')),
+                                            selected: pos == 'center',
+                                            onSelected: (_) =>
+                                                PlayPrefs.setKeywordPos(
+                                                    'center'),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                           ),

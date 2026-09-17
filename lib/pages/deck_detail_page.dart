@@ -1,15 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../data/app_database.dart';
 import '../services/app_events.dart';
 import '../services/app_locale.dart';
 import '../services/currency_service.dart';
+import '../services/deck_availability.dart';
+import '../services/deck_list_format.dart';
+import '../services/deck_stats.dart';
 import '../services/export_service.dart';
 import '../services/scryfall_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/mtg_symbols.dart';
 import 'card_detail_sheet.dart';
 
 // Editor do deck — espelha pages/decks_page.py + services/decks_database.py.
@@ -50,9 +57,82 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   int? _previewCardId;
   bool _importing = false;
   String _importStatus = '';
+
+  // Filtros da lista de cartas do deck, espelhando os da Coleção.
+  final _typeFilter = TextEditingController();
+  List<String> _allSets = [];
+  String _rarity = 'all';
+  String _setName = 'all';
+  String _color = 'all';
+  String _abilityFilter = 'all';
+  String _order = 'name ASC';
+  bool _favoritesOnly = false;
+  bool _showFilters = false;
   // Validação do formato (sininho) + modo de exibição.
   List<String> _problems = [];
   bool _deckViewGrid = false;
+  // Disponibilidade Deck x Collection + estatísticas (Fase A).
+  // Recalculados a cada _reload: o estado flui dos dados, sem timers.
+  DeckAvailability _avail = DeckAvailability.empty;
+  DeckStats _deckStats = DeckStats.empty;
+  // Rolagem do topo: ao recolher (cabeçalho/stats), volta ao início —
+  // senão o offset antigo mostra área vazia/cortada no lugar.
+  final _topScroll = ScrollController();
+  // Scroll próprio das cartas (grade e lista compartilham): permite
+  // realinhar a fileira após mudar a altura do topo.
+  final _cardsScroll = ScrollController();
+  // Cabeçalho recolhível (persistido): menos poluição, mais grade.
+  static const _headerKey = 'deck_header_expanded';
+  bool _headerExpanded = true;
+
+  // Estado local da ExpansionTile de estatísticas. Quando ambos os blocos
+  // estão fechados, o topo deixa de usar um scroll view limitado e volta a
+  // ocupar somente a altura real do conteúdo.
+  bool _statsExpanded = false;
+
+  Future<void> _loadHeader() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getBool(_headerKey);
+      if (!mounted || v == null) return;
+      setState(() => _headerExpanded = v);
+    } catch (_) {}
+  }
+
+  Future<void> _toggleHeader() async {
+    setState(() => _headerExpanded = !_headerExpanded);
+    // Conteúdo encolheu: zera o scroll do topo na hora.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_topScroll.hasClients) _topScroll.jumpTo(0);
+    });
+    _snapCardsToRow();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_headerKey, _headerExpanded);
+    } catch (_) {}
+  }
+
+  /// Realinha a grade na fileira mais próxima após mudar a altura do
+  /// topo (recolher/expandir): nenhuma carta fica cortada no meio por
+  /// causa do offset antigo. Só grade (fileiras exatas); lista mantém.
+  /// Sem timers: um post-frame do próprio Flutter, salto instantâneo.
+  void _snapCardsToRow() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_deckViewGrid || !_cardsScroll.hasClients) return;
+      // Grade 2 colunas, padding 12+12, espaçamento 12, aspecto 0.69
+      // (espelhar _deckGridTile se esses números mudarem).
+      final w = MediaQuery.of(context).size.width;
+      final itemW = (w - 24 - 12) / 2;
+      if (itemW <= 0) return;
+      final rowH = itemW / 0.69 + 12;
+      final pos = _cardsScroll.position;
+      final target =
+          ((pos.pixels / rowH).round() * rowH).clamp(0.0, pos.maxScrollExtent);
+      if ((target - pos.pixels).abs() > 1) {
+        _cardsScroll.jumpTo(target);
+      }
+    });
+  }
 
   /// Regras por formato (espelha services/deck_formats.py).
   static const _deckRules = {
@@ -79,6 +159,778 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
     'brawl': 'Brawl',
   };
 
+  static const _rarityKeys = ['all', 'common', 'uncommon', 'rare', 'mythic'];
+
+  static const _colorKeys = [
+    'all',
+    'W',
+    'U',
+    'B',
+    'R',
+    'G',
+    'multi',
+    'colorless',
+  ];
+
+  static const _orderLabels = <String, String>{
+    'name ASC': 'Nome (A–Z)',
+    'name DESC': 'Nome (Z–A)',
+    'price_usd DESC': 'Valor (maior → menor)',
+    'price_usd ASC': 'Valor (menor → maior)',
+    'set_name ASC': 'Edição (A–Z)',
+    'quantity DESC': 'Quantidade (maior → menor)',
+    'quantity ASC': 'Quantidade (menor → maior)',
+  };
+
+  static const _abilityLabels = <String, String>{
+    'all': 'Todas',
+    'flying': 'Voar',
+    'lifelink': 'Lifelink',
+    'deathtouch': 'Toque mortífero',
+    'first_strike': 'First strike',
+    'double_strike': 'Double strike',
+    'haste': 'Ímpeto',
+    'hexproof': 'Resistência à magia (Hexproof)',
+    'indestructible': 'Indestrutível',
+    'menace': 'Ameaçar',
+    'reach': 'Alcance',
+    'trample': 'Atropelar',
+    'vigilance': 'Vigilância',
+    'ward': 'Ward',
+    'flash': 'Flash',
+    'defender': 'Defensor',
+    'sacrifice': 'Sacrificar',
+    'graveyard_return': 'Retornar do cemitério',
+    'exile': 'Exilar',
+    'destroy': 'Destruir',
+    'discard': 'Descartar',
+    'draw': 'Comprar carta',
+    'counter': 'Anular / Counter',
+    'create_token': 'Criar ficha',
+    'mill': 'Milling',
+    'scry': 'Scry',
+    'gain_life': 'Ganhar vida',
+    'lose_life': 'Perder vida',
+  };
+
+  static const _cp1252Bytes = <int, int>{
+    0x20AC: 0x80,
+    0x201A: 0x82,
+    0x0192: 0x83,
+    0x201E: 0x84,
+    0x2026: 0x85,
+    0x2020: 0x86,
+    0x2021: 0x87,
+    0x02C6: 0x88,
+    0x2030: 0x89,
+    0x0160: 0x8A,
+    0x2039: 0x8B,
+    0x0152: 0x8C,
+    0x017D: 0x8E,
+    0x2018: 0x91,
+    0x2019: 0x92,
+    0x201C: 0x93,
+    0x201D: 0x94,
+    0x2022: 0x95,
+    0x2013: 0x96,
+    0x2014: 0x97,
+    0x02DC: 0x98,
+    0x2122: 0x99,
+    0x0161: 0x9A,
+    0x203A: 0x9B,
+    0x0153: 0x9C,
+    0x017E: 0x9E,
+    0x0178: 0x9F,
+  };
+
+  static int? _mojibakeByte(int rune) =>
+      _cp1252Bytes[rune] ?? (rune <= 0xFF ? rune : null);
+
+  static String _repairMojibake(String value) {
+    var current = value;
+
+    // Corrige cadeias UTF-8 interpretadas como Windows-1252/Latin-1.
+    // Fazemos algumas passagens porque alguns dados podem ter sido
+    // codificados duas vezes antes de chegar ao banco.
+    for (var pass = 0; pass < 4; pass++) {
+      final runes = current.runes.toList();
+      final out = StringBuffer();
+      var changed = false;
+
+      for (var i = 0; i < runes.length;) {
+        final first = runes[i];
+
+        int? decodedLength;
+        List<int>? bytes;
+
+        if ((first == 0xC2 || first == 0xC3) && i + 1 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          if (second != null) {
+            bytes = [first, second];
+            decodedLength = 2;
+          }
+        } else if (first == 0xE2 && i + 2 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          final third = _mojibakeByte(runes[i + 2]);
+          if (second != null && third != null) {
+            bytes = [first, second, third];
+            decodedLength = 3;
+          }
+        } else if (first == 0xF0 && i + 3 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          final third = _mojibakeByte(runes[i + 2]);
+          final fourth = _mojibakeByte(runes[i + 3]);
+          if (second != null && third != null && fourth != null) {
+            bytes = [first, second, third, fourth];
+            decodedLength = 4;
+          }
+        }
+
+        if (bytes != null && decodedLength != null) {
+          try {
+            out.write(utf8.decode(bytes));
+            i += decodedLength;
+            changed = true;
+            continue;
+          } catch (_) {
+            // Sequência legítima/ambígua: preserva os caracteres originais.
+          }
+        }
+
+        out.write(String.fromCharCode(first));
+        i++;
+      }
+
+      final next = out.toString();
+      if (!changed || next == current) break;
+      current = next;
+    }
+
+    return current;
+  }
+
+  static Object? _sanitizeValue(Object? value) {
+    // Preserva a estrutura/tipo original retornado pelo banco/API.
+    // Strings JSON (como card_faces/card_printings) continuam Strings;
+    // o parser específico de habilidades é que as decodifica quando necessário.
+    if (value is String) return _repairMojibake(value);
+
+    if (value is Map) {
+      return value.map(
+        (key, item) => MapEntry(
+          key.toString(),
+          _sanitizeValue(item),
+        ),
+      );
+    }
+
+    if (value is Iterable) {
+      return value.map(_sanitizeValue).toList(growable: false);
+    }
+
+    return value;
+  }
+
+  static Map<String, Object?> _sanitizeDbCard(
+    Map<String, Object?> card,
+  ) {
+    final sanitized = _sanitizeValue(card);
+    if (sanitized is Map) {
+      return sanitized.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    return Map<String, Object?>.of(card);
+  }
+
+  static Map<String, dynamic> _sanitizeApiCard(
+    Map<String, dynamic> card,
+  ) {
+    final sanitized = _sanitizeValue(card);
+    if (sanitized is Map) {
+      return sanitized.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    return Map<String, dynamic>.of(card);
+  }
+
+  static String _abilityRaw(Map<String, Object?> card) {
+    final parts = <String>[];
+
+    void collect(Object? value) {
+      if (value == null) return;
+
+      if (value is String) {
+        final repaired = _repairMojibake(value).trim().toLowerCase();
+
+        if ((repaired.startsWith('[') || repaired.startsWith('{'))) {
+          try {
+            final decoded = jsonDecode(repaired);
+            collect(decoded);
+            return;
+          } catch (_) {}
+        }
+
+        if (repaired.isNotEmpty) parts.add(repaired);
+        return;
+      }
+
+      if (value is Map) {
+        for (final entry in value.entries) {
+          final key = entry.key.toString().toLowerCase();
+          if (key == 'oracle_text' ||
+              key == 'printed_text' ||
+              key == 'keywords' ||
+              key == 'type_line' ||
+              key == 'printed_type_line') {
+            collect(entry.value);
+          } else if (key == 'card_faces' ||
+              key == 'faces' ||
+              key == 'card_printings') {
+            collect(entry.value);
+          }
+        }
+        return;
+      }
+
+      if (value is Iterable) {
+        for (final item in value) {
+          collect(item);
+        }
+        return;
+      }
+
+      collect(value.toString());
+    }
+
+    collect(card['oracle_text']);
+    collect(card['printed_text']);
+    collect(card['keywords']);
+    collect(card['type_line']);
+    collect(card['printed_type_line']);
+    collect(card['card_faces']);
+    collect(card['faces']);
+    collect(card['card_printings']);
+
+    return parts.join(' ');
+  }
+
+  static bool _containsAny(String raw, List<String> terms) =>
+      terms.any(raw.contains);
+
+  static bool _matchesAbility(Map<String, Object?> card, String ability) {
+    if (ability == 'all') return true;
+    final raw = _abilityRaw(card);
+
+    switch (ability) {
+      case 'flying':
+        return _containsAny(raw, [
+          'flying', 'voar', 'voa', 'voadora', 'vuela', 'volar', 'vol',
+          'volare', 'fliegend', 'fliegen', 'volare', '飛行', '비행',
+          'летает', 'полет', '飞行', '飛行',
+        ]);
+      case 'lifelink':
+        return _containsAny(raw, [
+          'lifelink', 'vínculo com a vida', 'vinculo com a vida',
+          'vínculo con la vida', 'vinculo con la vida', 'lien de vie',
+          'lebensverknüpfung', 'lebensverknupfung', 'legame vitale',
+          'vínculo vital', '絆魂', '생명연결', 'связь с жизнью', '系命', '繫命',
+        ]);
+      case 'deathtouch':
+        return _containsAny(raw, [
+          'deathtouch', 'toque mortífero', 'toque mortal', 'contact mortel',
+          'todesberührung', 'todesberuhrung', 'tocco letale', 'toque letal',
+          '接死', '치명타', 'смертельное касание', '死触', '死觸',
+        ]);
+      case 'first_strike':
+        return _containsAny(raw, [
+          'first strike', 'initiative', 'iniciativa', 'daña primero',
+          'dano primero', 'dança primeiro', 'erstschlag', 'attacco improvviso',
+          '先制攻撃', '선제공격', 'первый удар', '先攻', '先手攻撃',
+        ]);
+      case 'double_strike':
+        return _containsAny(raw, [
+          'double strike', 'golpe duplo', 'golpe doble', 'double initiative',
+          'doppio attacco', 'erst- und doppelschlag', 'double strike',
+          '二段攻撃', '이단 공격', 'двойной удар', '二重先制',
+        ]);
+      case 'haste':
+        return _containsAny(raw, [
+          'haste', 'ímpeto', 'impeto', 'prisa', 'rapidité', 'eile',
+          'rapidità', 'rapidez', '速攻', '신속', 'ускорение', '敏捷',
+        ]);
+      case 'hexproof':
+        return _containsAny(raw, [
+          'hexproof', 'resistência à magia', 'resistencia a magia',
+          'antimalefício', 'antimaleficio', 'antimaleficio', 'défense talismanique',
+          'verhexungsfluchsicherheit', 'antimalocchio', '呪禁', '방호',
+          'порчеустойчивость', '辟邪', '辟邪',
+        ]);
+      case 'indestructible':
+        return _containsAny(raw, [
+          'indestructible', 'indestrutível', 'indestructivel', 'indestructible',
+          'indestructible', 'unzerstörbar', 'indistruttibile', '破壊不能',
+          '무적', 'неразрушимый', '不灭', '不滅',
+        ]);
+      case 'menace':
+        return _containsAny(raw, [
+          'menace', 'ameaçar', 'ameaçador', 'amenaza', 'menace', 'bedrohlich',
+          'minacciare', 'menace', '威迫', '위협', 'угроза', '威慑', '威懾',
+        ]);
+      case 'reach':
+        return _containsAny(raw, [
+          'reach', 'alcance', 'alcanzar', 'portée', 'reichweite', 'portata',
+          'alcance', '到達', '대공', 'достижимость', '延到',
+        ]);
+      case 'trample':
+        return _containsAny(raw, [
+          'trample', 'atropelar', 'atropelo', 'arrollar', 'piétinement',
+          'überrennen', 'travolgere', 'atropellare', '践踏', '돌진',
+          'пробивное', '践踏',
+        ]);
+      case 'vigilance':
+        return _containsAny(raw, [
+          'vigilance', 'vigilância', 'vigilancia', 'vigilanz', 'vigilanza',
+          'vigilancia', '警戒', '경계', 'бдительность', '警戒',
+        ]);
+      case 'ward':
+        return _containsAny(raw, [
+          'ward', 'salvaguarda', 'resguardo', 'proteção', 'proteccion',
+          'ward', 'schutz', 'tutela', '護法', '방호', 'оберег', '护幕', '護幕',
+        ]);
+      case 'flash':
+        return _containsAny(raw, [
+          'flash', 'lampejo', 'destello', 'éclair', 'aufblitzen', 'lampo',
+          'flash', '瞬速', '섬광', 'вспышка', '闪现', '閃現',
+        ]);
+      case 'defender':
+        return _containsAny(raw, [
+          'defender', 'defensor', 'defensora', 'defensive', 'défenseur',
+          'verteidiger', 'difensore', '守備', '방어', 'защитник', '防御者',
+        ]);
+      case 'sacrifice':
+        return _containsAny(raw, [
+          'sacrifice', 'sacrificar', 'sacrifica', 'sacrifice', 'opfern',
+          'sacrificare', 'sacrificar', '生け贄', '희생', 'жертва', '牺牲', '犧牲',
+        ]);
+      case 'graveyard_return':
+        return _containsAny(raw, [
+          'graveyard', 'cemitério', 'cemiterio', 'cementerio', 'cimetière',
+          'friedhof', 'cimitero', '墓地', '무덤', 'кладбище', '墓地',
+        ]) &&
+            _containsAny(raw, [
+              'return', 'retornar', 'voltar', 'devolver', 'regresar', 'retourner',
+              'zurück', 'zuruck', 'ritorn', 'volver', '戻す', '돌아', 'вернуть',
+              '返回', '回墓',
+            ]);
+      case 'exile':
+        return _containsAny(raw, [
+          'exile', 'exilar', 'exilia', 'exiliar', 'desterrar', 'exiler',
+          'ins exil', 'ins exil', 'esiliare', '추방', '追放', 'изгнать',
+          '放逐', '放逐',
+        ]);
+      case 'destroy':
+        return _containsAny(raw, [
+          'destroy', 'destruir', 'destruye', 'détruire', 'zerstören',
+          'zerstoren', 'distruggere', 'destruír', '破壊', '파괴', 'уничтожить',
+          '摧毁', '摧毀',
+        ]);
+      case 'discard':
+        return _containsAny(raw, [
+          'discard', 'descartar', 'descarta', 'défausser', 'abwerfen',
+          'scartare', 'descartar', '捨て', '버리', 'сбросить', '弃牌', '棄牌',
+        ]);
+      case 'draw':
+        return _containsAny(raw, [
+          'draw a card', 'draw cards', 'draw ', 'comprar uma carta',
+          'compre uma carta', 'comprar cartas', 'robar una carta',
+          'robar cartas', 'piocher une carte', 'piocher des cartes',
+          'eine karte ziehen', 'pesca una carta', 'pesca carte',
+          '카드를 뽑', 'カードを引', 'взять карту', '抽一张牌', '抽一張牌',
+        ]);
+      case 'counter':
+        return _containsAny(raw, [
+          'counter target', 'counter spell', 'counter that',
+          'anular alvo', 'anule a mágica', 'anular a mágica',
+          'neutralizar a mágica', 'neutralize a mágica',
+          'contrarrestar', 'contrarresta',
+          'contrecarrer', 'neutralisieren', 'neutralisiere',
+          'neutralizzare', '打ち消す', '打消す', '무효화',
+          'контрить', 'отменить заклинание', '反击', '反擊',
+        ]);
+      case 'create_token':
+        return (_containsAny(raw, [
+              'create a ',
+              'create one ',
+              'criar uma ',
+              'criar um ',
+              'crie uma ',
+              'crear una ',
+              'crear un ',
+              'créer un ',
+              'erschaffe',
+              'crea una ',
+              'crea un ',
+              'token',
+              'ficha',
+              'ficha',
+              'jeton',
+              'spielstein',
+              'pedina',
+              'トークン',
+              '토큰',
+              'жетон',
+              '衍生物',
+            ]) &&
+            _containsAny(raw, [
+              'token', 'ficha', 'jeton', 'spielstein', 'pedina',
+              'トークン', '토큰', 'жетон', '衍生物',
+            ]));
+      case 'mill':
+        return _containsAny(raw, [
+          'mill', 'milling', 'moer cartas', 'moa cartas',
+          'moa a biblioteca', 'moler cartas', 'meule les cartes',
+          'mühle', 'macinare', 'macina carte',
+          'ライブラリーの上から', 'ライブラリーを切削',
+          '덱에서 밀', '덱을 밀', 'карты с верха библиотеки',
+          '磨掉', '磨牌',
+        ]);
+      case 'scry':
+        return _containsAny(raw, [
+          'scry', 'adivinhar', 'vidência', 'scry', 'mirar', 'espiar',
+          '占術', '점술', 'предсказание', '占卜',
+        ]);
+      case 'gain_life':
+        return _containsAny(raw, [
+          'gain life', 'gained life', 'gain 1 life', 'gain 2 life',
+          'gain 3 life', 'gain 4 life', 'gain 5 life',
+          'ganha vida', 'ganhar vida', 'ganhe vida',
+          'ganha pontos de vida', 'ganhar pontos de vida',
+          'ganhe pontos de vida', 'ganar vida', 'ganar vidas',
+          'gagner des points de vie', 'lebenspunkte erhalten',
+          'lebenspunkte gewinn', 'guadagnare punti vita',
+          'ライフを得', '생명점을 얻', 'получить жизнь',
+          'получите жизнь', '获得生命', '獲得生命',
+        ]);
+      case 'lose_life':
+        return _containsAny(raw, [
+          'lose life', 'perde vida', 'perder vida', 'perca vida',
+          'perder vidas', 'perder puntos de vida', 'perdre des points de vie',
+          'lebenspunkte verlieren', 'perdere punti vita',
+          'ライフを失', '생명점을 잃', 'потерять жизнь', '失去生命',
+        ]);
+      default:
+        return false;
+    }
+  }
+
+  static String _sortName(Map<String, Object?> card) =>
+      _repairMojibake(
+        (card['name'] ?? card['printed_name'] ?? '').toString(),
+      ).trim().toLowerCase();
+
+  static double _cardPrice(Map<String, Object?> card) {
+    final values = [
+      card['price_usd'],
+      card['price_ref_usd'],
+      card['value_usd'],
+      card['price'],
+    ];
+    for (final value in values) {
+      final parsed = double.tryParse(value?.toString() ?? '');
+      if (parsed != null && parsed.isFinite) return parsed;
+    }
+    return 0;
+  }
+
+  static String rarityLabel(String key) => switch (key) {
+        'common' => AppLocale.t('rar_common'),
+        'uncommon' => AppLocale.t('rar_uncommon'),
+        'rare' => AppLocale.t('rar_rare'),
+        'mythic' => AppLocale.t('rar_mythic'),
+        _ => AppLocale.t('rar_all'),
+      };
+
+  static String colorLabel(String key) => switch (key) {
+        'W' => AppLocale.t('col_white'),
+        'U' => AppLocale.t('col_blue'),
+        'B' => AppLocale.t('col_black'),
+        'R' => AppLocale.t('col_red'),
+        'G' => AppLocale.t('col_green'),
+        'multi' => AppLocale.t('col_multi'),
+        'colorless' => AppLocale.t('col_colorless'),
+        _ => AppLocale.t('rar_all'),
+      };
+
+  bool _matchesDeckFilters(Map<String, Object?> card) {
+    if (_rarity != 'all' &&
+        ((card['rarity'] ?? '').toString().toLowerCase() != _rarity)) {
+      return false;
+    }
+
+    if (_setName != 'all' && (card['set_name'] ?? '').toString() != _setName) {
+      return false;
+    }
+
+    if (_typeFilter.text.trim().isNotEmpty) {
+      final needle = _typeFilter.text.trim().toLowerCase();
+      final typeLine = (card['type_line'] ?? '').toString().toLowerCase();
+      if (!typeLine.contains(needle)) return false;
+    }
+
+    if (_color != 'all') {
+      final rawColors = card['colors'];
+      final colors = <String>[];
+      if (rawColors is List) {
+        colors.addAll(rawColors.map((e) => e.toString()));
+      } else {
+        try {
+          final decoded = jsonDecode(rawColors?.toString() ?? '[]');
+          if (decoded is List) colors.addAll(decoded.map((e) => e.toString()));
+        } catch (_) {}
+      }
+      if (_color == 'colorless') {
+        if (colors.isNotEmpty) return false;
+      } else if (_color == 'multi') {
+        if (colors.length < 2) return false;
+      } else if (!colors.contains(_color)) {
+        return false;
+      }
+    }
+
+    if (!_matchesAbility(card, _abilityFilter)) return false;
+
+    if (_favoritesOnly) {
+      final favorite = card['favorite'];
+      final ok = favorite == true ||
+          favorite == 1 ||
+          favorite == '1' ||
+          favorite == 'true';
+      if (!ok) return false;
+    }
+
+    return true;
+  }
+
+  List<Map<String, Object?>> get _visibleItems {
+    final visible = _items.where(_matchesDeckFilters).toList();
+    visible.sort((a, b) {
+      final byName = _sortName(a).compareTo(_sortName(b));
+      final bySet = _repairMojibake(
+        (a['set_name'] ?? '').toString(),
+      )
+          .toLowerCase()
+          .compareTo(
+            _repairMojibake((b['set_name'] ?? '').toString()).toLowerCase(),
+          );
+
+      final aq = (a['deck_quantity'] as num?)?.toInt() ??
+          (a['quantity'] as num?)?.toInt() ??
+          0;
+      final bq = (b['deck_quantity'] as num?)?.toInt() ??
+          (b['quantity'] as num?)?.toInt() ??
+          0;
+      final byQty = aq.compareTo(bq);
+      final byPrice = _cardPrice(a).compareTo(_cardPrice(b));
+
+      switch (_order) {
+        case 'name DESC':
+          return byName == 0 ? bySet : -byName;
+        case 'price_usd DESC':
+          return byPrice == 0 ? byName : -byPrice;
+        case 'price_usd ASC':
+          return byPrice == 0 ? byName : byPrice;
+        case 'set_name ASC':
+          return bySet == 0 ? byName : bySet;
+        case 'quantity DESC':
+          return byQty == 0 ? byName : -byQty;
+        case 'quantity ASC':
+          return byQty == 0 ? byName : byQty;
+        case 'name ASC':
+        default:
+          return byName == 0 ? bySet : byName;
+      }
+    });
+    return List<Map<String, Object?>>.unmodifiable(visible);
+  }
+
+  bool get _hasActiveDeckFilters =>
+      _rarity != 'all' ||
+      _setName != 'all' ||
+      _color != 'all' ||
+      _favoritesOnly ||
+      _abilityFilter != 'all' ||
+      _typeFilter.text.trim().isNotEmpty;
+
+  Future<void> _loadSets() async {
+    try {
+      final sets = await AppDatabase.instance.distinctSets();
+      if (mounted) setState(() => _allSets = sets);
+    } catch (_) {}
+  }
+
+  void _clearDeckFilters() {
+    setState(() {
+      _rarity = 'all';
+      _setName = 'all';
+      _color = 'all';
+      _abilityFilter = 'all';
+      _order = 'name ASC';
+      _favoritesOnly = false;
+      _typeFilter.clear();
+    });
+  }
+
+  Widget _deckFiltersPanel() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _rarity,
+                  isExpanded: true,
+                  decoration: InputDecoration(labelText: AppLocale.t('cl_rarity')),
+                  items: _rarityKeys
+                      .map((k) => DropdownMenuItem(
+                            value: k,
+                            child: Text(rarityLabel(k), overflow: TextOverflow.ellipsis),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _rarity = v ?? 'all'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _colorKeys.contains(_color) ? _color : 'all',
+                  isExpanded: true,
+                  decoration: InputDecoration(labelText: AppLocale.t('cl_color')),
+                  items: _colorKeys
+                      .map((k) => DropdownMenuItem(
+                            value: k,
+                            child: Text(colorLabel(k), overflow: TextOverflow.ellipsis),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _color = v ?? 'all'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _allSets.contains(_setName) ? _setName : 'all',
+                  isExpanded: true,
+                  decoration: InputDecoration(labelText: AppLocale.t('cl_set')),
+                  items: [
+                    DropdownMenuItem(
+                      value: 'all',
+                      child: Text(
+                        AppLocale.t('cl_all'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    for (final s in _allSets)
+                      DropdownMenuItem(
+                        value: s,
+                        child: Text(s, overflow: TextOverflow.ellipsis),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _setName = v ?? 'all'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue:
+                      _orderLabels.containsKey(_order) ? _order : 'name ASC',
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Ordenar por',
+                  ),
+                  items: _orderLabels.entries
+                      .map(
+                        (e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(
+                            e.value,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) =>
+                      setState(() => _order = v ?? 'name ASC'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _typeFilter,
+                  decoration:
+                      InputDecoration(labelText: AppLocale.t('cl_type_ex')),
+                  onSubmitted: (_) => setState(() {}),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _abilityLabels.containsKey(_abilityFilter)
+                      ? _abilityFilter
+                      : 'all',
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Habilidades'),
+                  items: _abilityLabels.entries
+                      .map((e) => DropdownMenuItem(
+                            value: e.key,
+                            child: Text(e.value, overflow: TextOverflow.ellipsis),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _abilityFilter = v ?? 'all'),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              FilterChip(
+                label: Text(AppLocale.t('cl_fav')),
+                selected: _favoritesOnly,
+                onSelected: (v) => setState(() => _favoritesOnly = v),
+              ),
+              const Spacer(),
+              if (_hasActiveDeckFilters)
+                TextButton(
+                  onPressed: _clearDeckFilters,
+                  child: Text(AppLocale.t('cl_clear')),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   static String formatLabel(String key) {
     final v = _formats[key] ?? key;
     // Nomes próprios de formato ficam iguais; os demais traduzem.
@@ -90,6 +942,8 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   void initState() {
     super.initState();
     _reload();
+    _loadHeader();
+    _loadSets();
     _query.addListener(_onQueryChanged);
     AppLocale.current.addListener(_onLocale);
     AppEvents.topVisible.addListener(_onBars);
@@ -98,6 +952,9 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   @override
   void dispose() {
     _query.dispose();
+    _typeFilter.dispose();
+    _topScroll.dispose();
+    _cardsScroll.dispose();
     _debounce?.cancel();
     AppLocale.current.removeListener(_onLocale);
     AppEvents.topVisible.removeListener(_onBars);
@@ -156,9 +1013,19 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
       SELECT c.*, dc.quantity AS deck_qty
       FROM deck_cards dc JOIN cards c ON c.id = dc.card_id
       WHERE dc.deck_id = ? ORDER BY c.name''', [widget.deckId]);
+    // Disponibilidade + stats derivam dos mesmos dados (fluxo único).
+    final idx = await Future.wait([
+      DeckAvailabilityService.ownedByOracle(db),
+      DeckAvailabilityService.ownedByName(db),
+    ]);
+    final avail =
+        DeckAvailabilityService.compute(rows, idx[0], idx[1]);
+    final stats = DeckStatsService.compute(rows);
     if (!mounted) return;
     setState(() {
-      _items = rows;
+      _items = rows.map(_sanitizeDbCard).toList(growable: true);
+      _avail = avail;
+      _deckStats = stats;
       if (deck.isNotEmpty) {
         _format = (deck.first['format'] ?? 'livre').toString();
         _commanderId = deck.first['commander_card_id'] as int?;
@@ -298,30 +1165,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
 
   Future<void> _searchLocal(String q) async {
     final rows = await AppDatabase.instance.searchCatalog(query: q);
-    if (mounted) setState(() => _localResults = rows);
-  }
-
-  /// Quantidade possuída na coleção (0 = só catálogo/Scryfall).
-  Future<int> _collectionQty(int cardId) async {
-    final rows = await AppDatabase.instance.db.query('cards',
-        columns: ['quantity'], where: 'id = ?', whereArgs: [cardId], limit: 1);
-    if (rows.isEmpty) return 0;
-    return (rows.first['quantity'] as num?)?.toInt() ?? 0;
-  }
-
-  /// Regra: no deck só entra até o que se tem na coleção.
-  /// Carta só-de-deck (quantity 0, vinda do Scryfall) é livre.
-  /// Retorna a quantidade permitida (e avisa se cortou).
-  Future<int> _capByCollection(int cardId, int wanted) async {
-    final owned = await _collectionQty(cardId);
-    if (owned > 0 && wanted > owned) {
-      if (mounted) {
-        AppToast.show(
-            context, AppLocale.t('dd_owned').replaceAll('{o}', '$owned'));
-      }
-      return owned;
-    }
-    return wanted;
+    if (mounted) setState(() => _localResults = rows.map(_sanitizeDbCard).toList(growable: true));
   }
 
   Future<void> _addExisting(int cardId) async {
@@ -332,15 +1176,11 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
     final cur = existing.isEmpty
         ? 0
         : ((existing.first['quantity'] as num?)?.toInt() ?? 0);
-    final next = await _capByCollection(cardId, cur + 1);
+    final next = cur + 1;
     if (existing.isEmpty) {
       await db.insert('deck_cards',
           {'deck_id': widget.deckId, 'card_id': cardId, 'quantity': next});
     } else {
-      if (next == cur) {
-        await _reload();
-        return;
-      }
       await db.update('deck_cards', {'quantity': next},
           where: 'deck_id = ? AND card_id = ?',
           whereArgs: [widget.deckId, cardId]);
@@ -374,7 +1214,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
     try {
       final results = await ScryfallService.instance.search(q, lang: _scryLang);
       if (!mounted || req != _scryReq) return;
-      setState(() => _scryResults = results.take(20).toList());
+      setState(() => _scryResults = results.take(20).map(_sanitizeApiCard).toList(growable: true));
       if (results.isEmpty && !silent) {
         final langLabel = ScryfallService.languageLabels[_scryLang] ?? '';
         setState(() => _scryError = _scryLang == 'all'
@@ -395,7 +1235,9 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   }
 
   /// Idioma fixo = estrito: sem cair para inglês escondido.
-  Future<int?> _resolveAndAdd(String name, {int qty = 1}) async {
+  /// [deckId] permite importar para outro deck (novo); o padrão é este.
+  /// A coleção nunca é alterada aqui (Fase A §1/§45-fluxo F).
+  Future<int?> _resolveAndAdd(String name, {int qty = 1, int? deckId}) async {
     Map<String, dynamic>? data;
     if (_scryLang != 'all') {
       data =
@@ -405,12 +1247,14 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
       data ??= await ScryfallService.instance.getCardByName(name, lang: 'en');
     }
     if (data == null) return null;
-    return _addScryfallData(data, qty: qty);
+    return _addScryfallData(data, qty: qty, deckId: deckId);
   }
 
-  Future<int> _addScryfallData(Map<String, dynamic> data, {int qty = 1}) async {
+  Future<int> _addScryfallData(Map<String, dynamic> data,
+      {int qty = 1, int? deckId}) async {
     final flat = ScryfallService.flatten(data);
     final db = AppDatabase.instance.db;
+    final target = deckId ?? widget.deckId;
     // Preserva a quantidade da coleção: nunca zera carta que já tem.
     final scryfallId = flat['scryfall_id']?.toString();
     int cardId;
@@ -433,19 +1277,19 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
       cardId = await db.insert('cards', flat);
     }
     final existing = await db.query('deck_cards',
-        where: 'deck_id = ? AND card_id = ?',
-        whereArgs: [widget.deckId, cardId]);
+        where: 'deck_id = ? AND card_id = ?', whereArgs: [target, cardId]);
     final cur = existing.isEmpty
         ? 0
         : ((existing.first['quantity'] as num?)?.toInt() ?? 0);
-    final next = await _capByCollection(cardId, cur + qty);
+    // Sem trava pela coleção (Fase A §1): deck pode exigir mais do que
+    // se possui; a disponibilidade informa a diferença.
+    final next = cur + qty;
     if (existing.isEmpty) {
       await db.insert('deck_cards',
-          {'deck_id': widget.deckId, 'card_id': cardId, 'quantity': next});
+          {'deck_id': target, 'card_id': cardId, 'quantity': next});
     } else {
       await db.update('deck_cards', {'quantity': next},
-          where: 'deck_id = ? AND card_id = ?',
-          whereArgs: [widget.deckId, cardId]);
+          where: 'deck_id = ? AND card_id = ?', whereArgs: [target, cardId]);
     }
     return cardId;
   }
@@ -539,8 +1383,8 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
           whereArgs: [widget.deckId, cardId]);
       if (_commanderId == cardId) await _setCommander(null);
     } else {
-      final allowed = await _capByCollection(cardId, qty);
-      await db.update('deck_cards', {'quantity': allowed},
+      // Sem trava pela coleção (Fase A §1).
+      await db.update('deck_cards', {'quantity': qty},
           where: 'deck_id = ? AND card_id = ?',
           whereArgs: [widget.deckId, cardId]);
     }
@@ -549,84 +1393,382 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
 
   // ============ import / export ============
 
+  // ============ import / export (Fase A §36-45) ============
+  // Parsers moram em DeckListFormat (central, testável).
+
   Future<void> _importDialog() async {
     final c = TextEditingController();
-    final text = await showDialog<String>(
+    var mode = 'append';
+    final picked = await showDialog<Map<String, Object>>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(AppLocale.t('dd_import')),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: TextField(
-            controller: c,
-            maxLines: 10,
-            decoration: const InputDecoration(
-              hintText: '4x Relâmpago\n2 Floresta\nSol Ring',
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setD) => AlertDialog(
+          title: Text(AppLocale.t('imp_title')),
+          // Rolável: com teclado aberto a altura encolhe e estourava.
+          scrollable: true,
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(AppLocale.t('imp_mode_sub'),
+                    style: const TextStyle(
+                        color: AppTheme.textMuted, fontSize: 12)),
+                const SizedBox(height: 4),
+                SegmentedButton<String>(
+                  style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact),
+                  segments: [
+                    ButtonSegment(
+                        value: 'append',
+                        label: Text(AppLocale.t('imp_mode_append'),
+                            style: const TextStyle(fontSize: 12))),
+                    ButtonSegment(
+                        value: 'replace',
+                        label: Text(AppLocale.t('imp_mode_replace'),
+                            style: const TextStyle(fontSize: 12))),
+                    ButtonSegment(
+                        value: 'new',
+                        label: Text(AppLocale.t('imp_mode_new'),
+                            style: const TextStyle(fontSize: 12))),
+                  ],
+                  selected: {mode},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (s) => setD(() => mode = s.first),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: c,
+                  maxLines: 6,
+                  minLines: 4,
+                  decoration: const InputDecoration(
+                    hintText:
+                        'Commander\n1 Aang\n\nDeck\n4 Lightning Bolt\n1 Sol Ring',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: c,
+                  maxLines: 8,
+                  decoration: const InputDecoration(
+                    hintText:
+                        'Commander\n1 Aang\n\nDeck\n4 Lightning Bolt\n1 Sol Ring',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.folder_open, size: 16),
+                    label: Text(AppLocale.t('imp_from_file')),
+                    onPressed: () async {
+                      try {
+                        final file = await FilePicker.pickFile(
+                          type: FileType.custom,
+                          allowedExtensions: ['txt', 'json'],
+                        );
+                        final path = file?.path;
+                        if (path == null || path.isEmpty) return;
+                        final content =
+                            await File(path).readAsString();
+                        setD(() {
+                          c.text = content;
+                          c.selection = TextSelection.collapsed(
+                              offset: c.text.length);
+                        });
+                      } catch (e) {
+                        if (dlgCtx.mounted) {
+                          ScaffoldMessenger.of(dlgCtx).showSnackBar(
+                              SnackBar(content: Text('$e')));
+                        }
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(AppLocale.t('common_cancel'))),
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.pop(context, {'text': c.text, 'mode': mode}),
+              child: Text(AppLocale.t('dd_import')),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(AppLocale.t('common_cancel'))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, c.text),
-            child: Text(AppLocale.t('dd_import')),
-          ),
-        ],
       ),
     );
-    if (text == null || text.trim().isEmpty) {
+    if (picked == null) {
       _laterDispose(c);
       return;
     }
+    final text = (picked['text'] ?? '').toString();
+    final importMode = (picked['mode'] ?? 'append').toString();
     _laterDispose(c);
+    if (text.trim().isEmpty) {
+      if (mounted) AppToast.show(context, AppLocale.t('imp_empty'));
+      return;
+    }
+    // JSON fiel primeiro; senão, texto tolerante.
+    var parsed = DeckListFormat.parseDeckJson(text);
+    parsed ??= DeckListFormat.parseDeckText(text);
+    final entries =
+        (parsed['entries'] as List).cast<Map<String, Object?>>();
+    var commanderName = parsed['commander']?.toString();
+    if (entries.isEmpty) {
+      if (mounted) AppToast.show(context, AppLocale.t('imp_empty'));
+      return;
+    }
+    int targetId = widget.deckId;
+    if (importMode == 'new') {
+      final name = await _askDeckName();
+      if (name == null || !mounted) return;
+      targetId = await AppDatabase.instance.db
+          .insert('decks', {'name': name.trim(), 'format': _format});
+    } else if (importMode == 'replace') {
+      final db = AppDatabase.instance.db;
+      await db.delete('deck_cards', where: 'deck_id = ?', whereArgs: [targetId]);
+      await db.update('decks', {'commander_card_id': null},
+          where: 'id = ?', whereArgs: [targetId]);
+      if (targetId == widget.deckId && mounted) {
+        setState(() => _commanderId = null);
+      }
+    }
     setState(() {
       _importing = true;
       _importStatus = AppLocale.t('dd_starting');
     });
-    int ok = 0;
-    int fail = 0;
-    final lines = text.split('\n');
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim();
-      if (line.isEmpty) continue;
-      var qty = 1;
-      final m = RegExp(r'^(\d+)\s*x?\s+(.+)$').firstMatch(line);
-      if (m != null) {
-        qty = int.tryParse(m.group(1)!) ?? 1;
-        line = m.group(2)!.trim();
-      }
-      line = line.replaceAll(RegExp(r'\[.*?\]'), '').trim();
+    var ok = 0;
+    final unidentified = <String>[];
+    for (var i = 0; i < entries.length; i++) {
+      final e = entries[i];
+      final line = (e['name'] ?? '').toString();
+      final qty = (e['qty'] as num?)?.toInt() ?? 1;
       if (mounted) {
-        setState(() => _importStatus = '${i + 1}/${lines.length}: $line');
+        setState(() => _importStatus = '${i + 1}/${entries.length}: $line');
       }
       try {
-        final id = await _resolveAndAdd(line, qty: qty);
+        final id =
+            await _resolveAndAdd(line, qty: qty, deckId: targetId);
         if (id == null) {
-          fail++;
+          unidentified.add(line);
         } else {
           ok++;
         }
       } catch (_) {
-        fail++;
+        unidentified.add(line);
       }
     }
-    await _reload();
+    // Comandante (se reconhecido entre as adicionadas).
+    if (commanderName != null && commanderName.trim().isNotEmpty) {
+      try {
+        final db = AppDatabase.instance.db;
+        final rows = await db.query('cards',
+            columns: ['id'],
+            where: 'name = ? OR printed_name = ?',
+            whereArgs: [commanderName.trim(), commanderName.trim()],
+            limit: 1);
+        if (rows.isNotEmpty && mounted) {
+          final cid = rows.first['id'] as int;
+          if (targetId == widget.deckId) {
+            await _setCommander(cid);
+          } else {
+            await db.update('decks', {'commander_card_id': cid},
+                where: 'id = ?', whereArgs: [targetId]);
+          }
+        }
+      } catch (_) {}
+    }
+    // Disponibilidade imediata (Fase A §37) sobre o deck destino.
+    DeckAvailability avail = DeckAvailability.empty;
+    try {
+      avail = await DeckAvailabilityService.forDeck(
+          AppDatabase.instance.db, targetId);
+    } catch (_) {}
+    if (targetId == widget.deckId) {
+      await _reload();
+    }
     if (mounted) {
       setState(() {
         _importing = false;
         _importStatus = '';
       });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(AppLocale.t('dd_imported')
-              .replaceAll('{ok}', '$ok')
-              .replaceAll('{fail}', '$fail'))));
+      await _importReport(
+          ok: ok,
+          unidentified: unidentified,
+          avail: avail,
+          targetId: targetId);
+    }
+  }
+
+  Future<String?> _askDeckName() async {
+    final c = TextEditingController(
+        text: '${widget.deckName} (importado)');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(AppLocale.t('imp_mode_new')),
+        content: TextField(controller: c, autofocus: true),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(AppLocale.t('common_cancel'))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, c.text),
+              child: Text(AppLocale.t('common_save'))),
+        ],
+      ),
+    );
+    _laterDispose(c);
+    if (name == null || name.trim().isEmpty) return null;
+    return name.trim();
+  }
+
+  /// Relatório da importação (Fase A §38): identificadas, não
+  /// reconhecidas e faltantes — sem confundir as duas coisas.
+  Future<void> _importReport(
+      {required int ok,
+      required List<String> unidentified,
+      required DeckAvailability avail,
+      required int targetId}) async {
+    final missing = avail.totalMissing;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppLocale.t('dd_imported')
+            .replaceAll('{ok}', '$ok')
+            .replaceAll('{fail}', '${unidentified.length}')),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                  AppLocale.t('av_summary')
+                      .replaceAll('{o}', '${avail.totalOwned}')
+                      .replaceAll('{t}', '${avail.totalNeed}'),
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              if (missing > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                    AppLocale.t('imp_avail')
+                        .replaceAll('{n}', '$missing'),
+                    style: const TextStyle(color: Colors.orange)),
+              ],
+              if (unidentified.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                    AppLocale.t('imp_unidentified')
+                        .replaceAll('{n}', '${unidentified.length}'),
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                for (final u in unidentified.take(12))
+                  Text('• $u',
+                      style:
+                          const TextStyle(color: AppTheme.textMuted)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          if (missing > 0)
+            TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  if (targetId == widget.deckId) {
+                    _missingSheet();
+                  }
+                },
+                child: Text(AppLocale.t('av_missing_btn'))),
+          TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _exportDeckById(targetId, json: false);
+              },
+              child: const Text('TXT')),
+          TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _exportDeckById(targetId, json: true);
+              },
+              child: const Text('JSON')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(AppLocale.t('common_apply'))),
+        ],
+      ),
+    );
+  }
+
+  /// Exporta qualquer deck por id (relatório de import pode mirar
+  /// num deck novo, não só no aberto).
+  Future<void> _exportDeckById(int deckId, {bool json = false}) async {
+    try {
+      final db = AppDatabase.instance.db;
+      final deck = await db.query('decks',
+          where: 'id = ?', whereArgs: [deckId], limit: 1);
+      if (deck.isEmpty) return;
+      final name = (deck.first['name'] ?? 'deck').toString();
+      final format = (deck.first['format'] ?? 'livre').toString();
+      final commanderId =
+          deck.first['commander_card_id'] as int?;
+      final items = await db.rawQuery('''
+        SELECT c.*, dc.quantity AS deck_qty
+        FROM deck_cards dc JOIN cards c ON c.id = dc.card_id
+        WHERE dc.deck_id = ? ORDER BY c.name''', [deckId]);
+      var commanderName = '';
+      for (final c in items) {
+        if ((c['id'] as int?) == commanderId) {
+          commanderName = (c['name'] ?? '').toString();
+        }
+      }
+      if (json) {
+        await ExportService.exportDeckJson(
+          name,
+          format: format,
+          commanderCardId: commanderId,
+          commanderName: commanderName,
+          cards: items,
+        );
+      } else {
+        await ExportService.exportDeckTxt(name, items);
+      }
+    } catch (e) {
+      if (mounted) AppToast.show(context, '$e');
     }
   }
 
   Future<void> _export() async {
     await ExportService.exportDeckTxt(widget.deckName, _items);
+  }
+
+  Future<void> _exportJson() async {
+    var commanderName = '';
+    for (final c in _items) {
+      if ((c['id'] as int?) == _commanderId) {
+        commanderName = (c['name'] ?? '').toString();
+      }
+    }
+    await ExportService.exportDeckJson(
+      widget.deckName,
+      format: _format,
+      commanderCardId: _commanderId,
+      commanderName: commanderName,
+      cards: _items,
+    );
+  }
+
+  void _toggleDeckFilters() {
+    setState(() => _showFilters = !_showFilters);
+    if (!_showFilters) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_topScroll.hasClients) return;
+        _topScroll.jumpTo(0);
+      });
+    }
   }
 
   void _switchMode(String mode) {
@@ -654,6 +1796,11 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
     if (!mounted) return;
     await showModalBottomSheet(
       context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
       builder: (_) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -702,6 +1849,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   Widget build(BuildContext context) {
     final isCollection = _addMode == 'collection';
     final top = AppEvents.topVisible.value;
+    final visibleItems = _visibleItems;
     return Scaffold(
       // Rota empilhada: com a top escondida mostra o voltar flutuante.
       floatingActionButton: top
@@ -751,65 +1899,182 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                     icon: const Icon(Icons.upload),
                     tooltip: AppLocale.t('dd_import_tip'),
                     onPressed: _importing ? null : _importDialog),
-                IconButton(
-                    icon: const Icon(Icons.share),
-                    tooltip: AppLocale.t('dd_export'),
-                    onPressed: _items.isEmpty ? null : _export),
+                PopupMenuButton<String>(
+                  tooltip: 'Ordenar',
+                  icon: const Icon(Icons.sort),
+                  onSelected: (v) {
+                    setState(() => _order = v);
+                  },
+                  itemBuilder: (_) => _orderLabels.entries
+                      .map(
+                        (e) => PopupMenuItem<String>(
+                          value: e.key,
+                          child: Text(e.value),
+                        ),
+                      )
+                      .toList(),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: AppLocale.t('dd_export'),
+                  icon: const Icon(Icons.share),
+                  enabled: _items.isNotEmpty,
+                  onSelected: (v) {
+                    if (v == 'json') {
+                      _exportJson();
+                    } else {
+                      _export();
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                        value: 'txt',
+                        child: Text(AppLocale.t('dd_export'))),
+                    PopupMenuItem(
+                        value: 'json',
+                        child: Text(AppLocale.t('dd_export_json'))),
+                  ],
+                ),
               ],
             )
           : null,
       body: SafeArea(
         top: !AppEvents.topVisible.value,
         bottom: false,
-        child: Column(
-          children: [
-            Card(
-              margin: const EdgeInsets.all(12),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  children: [
-                    Row(
+        child: LayoutBuilder(
+          builder: (_, cons) {
+            final topCap =
+                cons.maxHeight.isFinite ? cons.maxHeight * 0.45 : 420.0;
+
+            // O topo só usa o scroll limitado quando há conteúdo expandido.
+            // Com o cabeçalho e as estatísticas recolhidos, ele volta à
+            // altura natural. Assim a grade não fica presa a um container
+            // de 45% da tela e ocupa todo o espaço liberado.
+            final topContent = Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _headerCard(),
+                if (_importing)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
                       children: [
-                        _stat('$_totalCards', AppLocale.t('dd_cards')),
-                        _stat(
-                            CurrencyService.instance
-                                .formatUsd(_totalValue),
-                            CurrencyService.instance.currency.value),
-                        _stat('${_items.length}', AppLocale.t('dd_unique')),
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _importStatus,
+                            style: const TextStyle(
+                              color: AppTheme.textMuted,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      value: _formats.containsKey(_format) ? _format : 'livre',
-                      decoration:
-                          InputDecoration(labelText: AppLocale.t('dd_format')),
-                      items: _formats.entries
-                          .map((e) => DropdownMenuItem(
-                              value: e.key, child: Text(formatLabel(e.key))))
-                          .toList(),
-                      onChanged: _setFormat,
+                  ),
+                _statsSection(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                AppLocale.t('dd_count')
+                                    .replaceAll('{u}', '${_items.length}')
+                                    .replaceAll('{t}', '$_totalCards'),
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppTheme.textMuted,
+                                ),
+                              ),
+                            ),
+                            if (_hasActiveDeckFilters) ...[
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  '${visibleItems.length} filtradas',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: AppTheme.gold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _toggleDeckFilters,
+                        icon: Icon(
+                          _showFilters
+                              ? Icons.filter_list_off
+                              : Icons.filter_list,
+                          color: _hasActiveDeckFilters
+                              ? AppTheme.gold
+                              : AppTheme.textMuted,
+                        ),
+                        label: Text(
+                          _hasActiveDeckFilters ? 'Filtros ativos' : 'Filtros',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _hasActiveDeckFilters
+                                ? AppTheme.gold
+                                : AppTheme.textMuted,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          _deckViewGrid
+                              ? Icons.view_list
+                              : Icons.grid_view,
+                        ),
+                        tooltip: _deckViewGrid
+                            ? AppLocale.t('dd_view_list')
+                            : AppLocale.t('dd_view_grid'),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 40,
+                          minHeight: 40,
+                        ),
+                        onPressed: () {
+                          setState(() => _deckViewGrid = !_deckViewGrid);
+                          _snapCardsToRow();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                if (_showFilters) _deckFiltersPanel(),
+              ],
+            );
+
+            final topNeedsScroll =
+                _headerExpanded || _statsExpanded || _importing || _showFilters;
+
+            return Column(
+              children: [
+                if (topNeedsScroll)
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxHeight: topCap),
+                      child: SingleChildScrollView(
+                        controller: _topScroll,
+                        child: topContent,
+                      ),
                     ),
-                  ],
-                ),
-              ),
-            ),
-            if (_importing)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: Text(_importStatus,
-                            style: const TextStyle(color: AppTheme.textMuted))),
-                  ],
-                ),
-              ),
+                  )
+                else
+                  topContent,
+
             // ---- alternador da fonte de adição ----
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
@@ -941,37 +2206,26 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
               ),
             if (!isCollection && _scryResults.isNotEmpty)
               Flexible(fit: FlexFit.loose, child: _scryAddList()),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-              child: Row(
-                children: [
-                  Text(
-                      AppLocale.t('dd_count')
-                          .replaceAll('{u}', '${_items.length}')
-                          .replaceAll('{t}', '$_totalCards'),
-                      style: const TextStyle(color: AppTheme.textMuted)),
-                  const Spacer(),
-                  IconButton(
-                    icon:
-                        Icon(_deckViewGrid ? Icons.view_list : Icons.grid_view),
-                    tooltip: _deckViewGrid
-                        ? AppLocale.t('dd_view_list')
-                        : AppLocale.t('dd_view_grid'),
-                    onPressed: () =>
-                        setState(() => _deckViewGrid = !_deckViewGrid),
-                  ),
-                ],
-              ),
-            ),
             Expanded(
-              child: _items.isEmpty
+              child: visibleItems.isEmpty
                   ? Center(
-                      child: Text(AppLocale.t('dd_empty'),
+                      child: Text(
+                          _items.isEmpty
+                              ? AppLocale.t('dd_empty')
+                              : 'Nenhuma carta encontrada com os filtros atuais.',
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: AppTheme.textMuted)))
                   : _deckViewGrid
                       ? GridView.builder(
-                          padding: const EdgeInsets.all(12),
+                          controller: _cardsScroll,
+                          padding: EdgeInsets.fromLTRB(
+                              12,
+                              12,
+                              12,
+                              12 +
+                                  MediaQuery.of(context)
+                                      .padding
+                                      .bottom),
                           gridDelegate:
                               const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 2,
@@ -981,13 +2235,19 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                             crossAxisSpacing: 12,
                             mainAxisSpacing: 12,
                           ),
-                          itemCount: _items.length,
-                          itemBuilder: (_, i) => _deckGridTile(_items[i]),
+                          itemCount: visibleItems.length,
+                          itemBuilder: (_, i) => _deckGridTile(_visibleItems[i]),
                         )
                       : ListView.builder(
-                          itemCount: _items.length,
+                          controller: _cardsScroll,
+                          padding: EdgeInsets.only(
+                              bottom: MediaQuery.of(context)
+                                      .padding
+                                      .bottom +
+                                  12),
+                          itemCount: visibleItems.length,
                           itemBuilder: (_, i) {
-                            final c = _items[i];
+                            final c = visibleItems[i];
                             final q = (c['deck_qty'] as num?)?.toInt() ?? 1;
                             final isCommander =
                                 _commanderId == (c['id'] as int);
@@ -1002,8 +2262,18 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                                       fontWeight: isCommander
                                           ? FontWeight.bold
                                           : FontWeight.normal)),
-                              subtitle: Text(
-                                  '${c['type_line'] ?? ''} • ${CurrencyService.instance.formatUsd(((c['price_usd'] ?? c['price_ref_usd']) as num?)?.toDouble() ?? 0)}'),
+                              subtitle: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                        '${c['type_line'] ?? ''} • ${CurrencyService.instance.formatUsd(((c['price_usd'] ?? c['price_ref_usd']) as num?)?.toDouble() ?? 0)}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  _availBadge(c),
+                                ],
+                              ),
                               onTap: () => showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: true,
@@ -1073,9 +2343,10 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                         ),
             ),
           ],
-        ),
-      ),
-    );
+        );
+      }),
+    ),
+  );
   }
 
   /// Tile do deck em grade: arte inteira + qtd do deck.
@@ -1159,8 +2430,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
           Positioned(
             top: 0,
             right: 0,
-            child: PopupMenuButton<String>(
-              tooltip: AppLocale.t('dd_card_options'),
+            child: PopupMenuButton<String>(              tooltip: AppLocale.t('dd_card_options'),
               icon: const Icon(Icons.more_vert, color: Colors.white),
               color: AppTheme.panel,
               onSelected: (v) {
@@ -1229,6 +2499,16 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                                 ? const Color(0xFF14161D)
                                 : Colors.white,
                             fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(width: 4),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: _availBadge(c),
                   ),
                   const Spacer(),
                   _gridQtyButton(
@@ -1403,6 +2683,91 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
     );
   }
 
+  /// Cabeçalho recolhível (Fase A §21): fechado mostra só o essencial
+  /// (cartas • valor • disponibilidade); aberto, resumo completo.
+  Widget _headerCard() {
+    final a = _avail;
+    final Color availColor;
+    final String availText;
+    if (a.totalNeed == 0) {
+      availColor = AppTheme.textMuted;
+      availText = '0';
+    } else if (a.totalMissing == 0) {
+      availColor = Colors.green;
+      availText = '${a.totalOwned}/${a.totalNeed}';
+    } else if (a.totalOwned > 0) {
+      availColor = Colors.orange;
+      availText = '${a.totalOwned}/${a.totalNeed}';
+    } else {
+      availColor = Colors.redAccent;
+      availText = '0/${a.totalNeed}';
+    }
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            InkWell(
+              onTap: _toggleHeader,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                          '$_totalCards • ${CurrencyService.instance.formatUsd(_totalValue)} • $availText',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                              color: availColor)),
+                    ),
+                    Icon(
+                        _headerExpanded
+                            ? Icons.expand_less
+                            : Icons.expand_more,
+                        size: 20,
+                        color: AppTheme.textMuted),
+                  ],
+                ),
+              ),
+            ),
+            if (_headerExpanded) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _stat('$_totalCards', AppLocale.t('dd_cards')),
+                  _stat(
+                      CurrencyService.instance.formatUsd(_totalValue),
+                      CurrencyService.instance.currency.value),
+                  _stat('${_items.length}', AppLocale.t('dd_unique')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _commanderColorsRow(),
+              const SizedBox(height: 8),
+              _availabilityBar(),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: _formats.containsKey(_format) ? _format : 'livre',
+                decoration:
+                    InputDecoration(labelText: AppLocale.t('dd_format')),
+                items: _formats.entries
+                    .map((e) => DropdownMenuItem(
+                        value: e.key, child: Text(formatLabel(e.key))))
+                    .toList(),
+                onChanged: _setFormat,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _stat(String value, String label) {
     return Expanded(
       child: Column(
@@ -1416,5 +2781,466 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
         ],
       ),
     );
+  }
+
+  /// Linha comandante + cores + MV médio (Fase A).
+  Widget _commanderColorsRow() {
+    Map<String, Object?>? commander;
+    for (final c in _items) {
+      if ((c['id'] as int?) == _commanderId) commander = c;
+    }
+    final colors = [
+      for (final col in DeckStatsService.colorOrder)
+        if ((_deckStats.colors[col] ?? 0) > 0) col
+    ];
+    if (commander == null && colors.isEmpty && _deckStats.mvCount == 0) {
+      return const SizedBox.shrink();
+    }
+    return Row(
+      children: [
+        if (commander != null)
+          Expanded(
+            child: Row(
+              children: [
+                const Icon(Icons.shield, size: 14, color: AppTheme.gold),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text((commander['name'] ?? '').toString(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 12)),
+                ),
+              ],
+            ),
+          ),
+        if (colors.isNotEmpty)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var k = 0; k < colors.length; k++) ...[
+                if (k > 0) const SizedBox(width: 3),
+                MtgPip(colors[k], size: 16),
+              ],
+            ],
+          ),
+        if (_deckStats.mvCount > 0) ...[
+          const SizedBox(width: 8),
+          Text(
+              'MV ${_deckStats.avgMv.toStringAsFixed(2)}',
+              style:
+                  const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+        ],
+      ],
+    );
+  }
+
+  /// Barra de disponibilidade Deck x Collection (Fase A).
+  Widget _availabilityBar() {
+    final a = _avail;
+    final ok = a.totalOwned;
+    final missing = a.totalMissing;
+    final total = a.totalNeed;
+    final complete = total > 0 && missing == 0;
+    final empty = total == 0;
+    final label = empty
+        ? AppLocale.t('dd_empty')
+        : complete
+            ? AppLocale.t('av_complete')
+            : AppLocale.t('av_summary')
+                .replaceAll('{o}', '$ok')
+                .replaceAll('{t}', '$total');
+    return InkWell(
+      onTap: (!empty && !complete) ? _missingSheet : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                    empty
+                        ? Icons.inbox_outlined
+                        : complete
+                            ? Icons.check_circle
+                            : (ok > 0
+                                ? Icons.warning_amber
+                                : Icons.cancel_outlined),
+                    size: 16,
+                    color: empty
+                        ? AppTheme.textMuted
+                        : complete
+                            ? Colors.green
+                            : (ok > 0 ? Colors.orange : Colors.redAccent)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(label,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 12)),
+                ),
+                if (!empty && !complete)
+                  Text(AppLocale.t('av_missing_btn'),
+                      style: const TextStyle(
+                          color: AppTheme.gold, fontSize: 12)),
+              ],
+            ),
+            if (!empty) ...[
+              const SizedBox(height: 4),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  height: 8,
+                  child: Row(
+                    children: [
+                      if (ok > 0)
+                        Expanded(
+                            flex: ok,
+                            child: const ColoredBox(color: Colors.green)),
+                      if (missing > 0)
+                        Expanded(
+                            flex: missing,
+                            child: ColoredBox(
+                                color: ok > 0
+                                    ? Colors.orange
+                                    : Colors.redAccent)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Seção de estatísticas (curva, tipos, mana) — ExpansionTile.
+  Widget _statsSection() {
+    final s = _deckStats;
+    if (s.totalCards == 0) return const SizedBox.shrink();
+    Widget barRow(String label, int value, int max, Color color) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 64,
+              child: Text(label,
+                  style: const TextStyle(
+                      color: AppTheme.textMuted, fontSize: 12)),
+            ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: SizedBox(
+                  height: 10,
+                  child: Row(
+                    children: [
+                      if (value > 0 && max > 0)
+                        Expanded(
+                            flex: value,
+                            child: ColoredBox(color: color)),
+                      if (max - value > 0)
+                        Expanded(
+                            flex: max - value,
+                            child: ColoredBox(
+                                color: Colors.white.withValues(alpha: 0.08))),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 32,
+              child: Text('$value',
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 12)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final t = s.types;
+    final typeRows = [
+      ('Criaturas', t.creatures),
+      ('Instantâneas', t.instants),
+      ('Feitiços', t.sorceries),
+      ('Artefatos', t.artifacts),
+      ('Encantamentos', t.enchantments),
+      ('Planinautas', t.planeswalkers),
+      ('Terrenos', t.lands),
+      ('Outras', t.other),
+    ];
+    final curveMax = [for (var i = 0; i <= 6; i++) s.curve[i] ?? 0]
+        .fold<int>(1, (m, v) => v > m ? v : m);
+    final typeMax =
+        [...typeRows.map((e) => e.$2)].fold<int>(1, (m, v) => v > m ? v : m);
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      // Corta o conteúdo nos cantos: aberto, o fundo da expansão não
+      // vaza em quadrado por cima do arredondado.
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ExpansionTile(
+        dense: true,
+        // Ao fechar, o conteúdo encolhe: zera o scroll do topo e
+        // realinha a grade (como no cabeçalho).
+        onExpansionChanged: (open) {
+          if (mounted) {
+            setState(() => _statsExpanded = open);
+          }
+          if (!open) {
+            if (_topScroll.hasClients) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (_topScroll.hasClients) _topScroll.jumpTo(0);
+              });
+            }
+            _snapCardsToRow();
+          }
+        },
+        // Cabeçalho e corpo com o mesmo raio do Card (sem quina).
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        collapsedShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        title: Text(AppLocale.t('stats_title'),
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 14)),
+        subtitle: Text(
+            'MV ${s.avgMv.toStringAsFixed(2)} • ${AppLocale.t('stats_lands')}: ${s.landCount} • ${AppLocale.t('stats_sources')}: ${s.manaSources}',
+            style:
+                const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+        children: [
+          // Sem teto/rolo interno: o topo da página já rola por fora
+          // (Flexible) — aqui o conteúdo abre inteiro, sem corte e sem
+          // brilho de overscroll aninhado.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(AppLocale.t('stats_curve'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13)),
+                for (var i = 0; i <= 6; i++)
+                  barRow(i == 6 ? '6+' : '$i', s.curve[i] ?? 0,
+                      curveMax, AppTheme.gold),
+                const SizedBox(height: 8),
+                Text(AppLocale.t('stats_types'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13)),
+                for (final r in typeRows)
+                  barRow(r.$1, r.$2, typeMax, Colors.lightBlue),
+                const SizedBox(height: 8),
+                Text(AppLocale.t('stats_mana'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13)),
+                Text(AppLocale.t('stats_cards_sources'),
+                    style: const TextStyle(
+                        color: AppTheme.textMuted, fontSize: 11)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 4,
+                  children: [
+                    for (final col in DeckStatsService.colorOrder)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          MtgPip(col, size: 16),
+                          const SizedBox(width: 3),
+                          Text('${s.colors[col] ?? 0}',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold)),
+                          Text(
+                              ' / ${s.sourcesByColor[col] ?? 0}',
+                              style: const TextStyle(
+                                  color: AppTheme.textMuted,
+                                  fontSize: 12)),
+                        ],
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Selo de disponibilidade por carta (lista/grade).
+  Widget _availBadge(Map<String, Object?> c) {
+    final id = (c['id'] as num?)?.toInt() ?? -1;
+    final a = _avail.forCard(id);
+    if (a.need <= 0) return const SizedBox.shrink();
+    final Widget icon;
+    final String text;
+    final Color color;
+    if (a.status == AvailStatus.ok) {
+      icon = const Icon(Icons.check_circle, size: 14, color: Colors.green);
+      text = '';
+      color = Colors.green;
+    } else if (a.status == AvailStatus.partial) {
+      icon = const Icon(Icons.warning_amber, size: 14, color: Colors.orange);
+      text = '−${a.missing}';
+      color = Colors.orange;
+    } else {
+      icon =
+          const Icon(Icons.cancel_outlined, size: 14, color: Colors.redAccent);
+      text = '−${a.missing}';
+      color = Colors.redAccent;
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        icon,
+        if (text.isNotEmpty) ...[
+          const SizedBox(width: 2),
+          Text(text,
+              style: TextStyle(
+                  color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ],
+    );
+  }
+
+  /// Faltantes: tabela + exportar (Fase A §15/§42-43).
+  Future<void> _missingSheet() async {
+    final a = _avail;
+    final rows = [
+      for (final c in _items)
+        if ((_avail.forCard((c['id'] as num?)?.toInt() ?? -1).missing) > 0)
+          MapEntry(c, _avail.forCard((c['id'] as num?)?.toInt() ?? -1))
+    ];
+    if (rows.isEmpty) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                  AppLocale.t('av_missing_title')
+                      .replaceAll('{n}', '${a.totalMissing}'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 4),
+              Text(
+                  AppLocale.t('av_missing_value').replaceAll(
+                      '{v}',
+                      CurrencyService.instance
+                          .formatUsd(a.missingValue)),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: AppTheme.textMuted, fontSize: 12)),
+              const SizedBox(height: 8),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: rows.length,
+                  itemBuilder: (_, k) {
+                    final c = rows[k].key;
+                    final av = rows[k].value;
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text((c['name'] ?? '').toString(),
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13)),
+                      subtitle: Text(
+                          AppLocale.t('av_row')
+                              .replaceAll('{need}', '${av.need}')
+                              .replaceAll('{owned}', '${av.owned}')
+                              .replaceAll('{missing}', '${av.missing}'),
+                          style: const TextStyle(fontSize: 11)),
+                      trailing: Text('−${av.missing}',
+                          style: const TextStyle(
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold)),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.share, size: 16),
+                      label: Text(AppLocale.t('av_export_txt')),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _exportMissingTxt();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon:
+                          const Icon(Icons.table_chart, size: 16),
+                      label: Text(AppLocale.t('av_export_csv')),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _exportMissingCsv();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportMissingTxt() async {
+    final buf = StringBuffer();
+    for (final c in _items) {
+      final av = _avail.forCard((c['id'] as num?)?.toInt() ?? -1);
+      if (av.missing > 0) {
+        buf.writeln('${av.missing}x ${c['name'] ?? ''}');
+      }
+    }
+    await ExportService.exportMissingTxt(widget.deckName, buf.toString());
+  }
+
+  Future<void> _exportMissingCsv() async {
+    final rows = <List<String>>[
+      ['name', 'need', 'owned', 'missing'],
+      for (final c in _items)
+        if (_avail
+                .forCard((c['id'] as num?)?.toInt() ?? -1)
+                .missing >
+            0)
+          [
+            (c['name'] ?? '').toString(),
+            '${_avail.forCard((c['id'] as num?)?.toInt() ?? -1).need}',
+            '${_avail.forCard((c['id'] as num?)?.toInt() ?? -1).owned}',
+            '${_avail.forCard((c['id'] as num?)?.toInt() ?? -1).missing}',
+          ],
+    ];
+    await ExportService.exportMissingCsv(widget.deckName, rows);
   }
 }

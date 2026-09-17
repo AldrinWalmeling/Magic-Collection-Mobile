@@ -183,6 +183,8 @@ class OnlineMatch {
     String format = 'livre',
     int startLife = 20,
     String tableTheme = 'midnight',
+    String playerTheme = '',
+    String playerBg = '',
     int maxPlayers = defaultMaxPlayers,
     bool allowLateJoin = true,
     Map<String, dynamic>? initialState,
@@ -227,6 +229,8 @@ class OnlineMatch {
           'name': safeName,
           'joinedAt': now,
           'connected': true,
+          'theme': playerTheme,
+          'bg': playerBg,
         },
       },
       'state': state,
@@ -244,6 +248,8 @@ class OnlineMatch {
   Future<OnlineRoomInfo> joinRoom({
     required String roomCode,
     required String playerName,
+    String playerTheme = '',
+    String playerBg = '',
   }) async {
     _ensureOpen();
     final normalized = _normalizeRoomCode(roomCode);
@@ -252,7 +258,7 @@ class OnlineMatch {
     }
 
     await leaveRoom(deleteIfHost: true);
-    final user = await authenticate();
+    var user = await authenticate();
     final room = _database.ref('rooms/$normalized');
     final snap = await room.get();
     if (!snap.exists) {
@@ -263,20 +269,47 @@ class OnlineMatch {
     if (info.isStarted && !info.allowLateJoin) {
       throw StateError('Partida em andamento (entrada tardia fechada).');
     }
-    if (info.isFull && !info.players.containsKey(user.uid)) {
+    final safeName = _sanitizeName(playerName);
+    // UID em uso por OUTRO aparelho com outro nome (clone/restauração
+    // que copiou a identidade anônima): com o mesmo UID o host trata
+    // tudo como eco próprio e o guest "não consegue fazer nada".
+    // Cura: troca a identidade local por uma nova antes de entrar.
+    final taken = info.players[user.uid];
+    if (taken is Map) {
+      final cur = Map<String, dynamic>.from(
+          taken.map((k, v) => MapEntry(k.toString(), v)));
+      final otherName = (cur['name'] ?? '').toString();
+      final connected = cur['connected'] == true;
+      if (otherName.isNotEmpty &&
+          otherName.trim().toLowerCase() != safeName.trim().toLowerCase() &&
+          connected) {
+        try {
+          await _auth.signOut();
+          final cred = await _auth.signInAnonymously();
+          final fresh = cred.user;
+          if (fresh != null) {
+            user = fresh;
+            _myUid = fresh.uid;
+          }
+        } catch (_) {}
+      }
+    }
+    final myUid = _myUid ?? user.uid;
+    if (info.isFull && !info.players.containsKey(myUid)) {
       throw StateError('A sala está cheia.');
     }
 
-    final safeName = _sanitizeName(playerName);
-    await room.child('players/${user.uid}').set({
+    await room.child('players/$myUid').set({
       'name': safeName,
       'joinedAt': ServerValue.timestamp,
       'connected': true,
+      'theme': playerTheme,
+      'bg': playerBg,
     });
     await room.update({'updatedAt': ServerValue.timestamp});
 
     _roomId = normalized;
-    _myUid = user.uid;
+    _myUid = myUid;
     _listenToRoom();
     return await _readRoom(normalized);
   }
@@ -387,6 +420,20 @@ class OnlineMatch {
   Future<void> setConnected(bool connected) async {
     if (_roomId == null || myUid == null) return;
     await roomRef!.child('players/$myUid/connected').set(connected);
+    await roomRef!.update({'updatedAt': ServerValue.timestamp});
+  }
+
+  /// Atualiza SÓ o visual (tema/fundo) do meu nó na sala, sem mexer
+  /// no estado da partida. Mantém a lista da sala coerente para quem
+  /// entrar depois (o estado oficial com o visual vai via publishState
+  /// do host). Valores nulos são ignorados.
+  Future<void> updatePlayerVisual({String? theme, String? bg}) async {
+    if (_roomId == null || myUid == null) return;
+    final patch = <String, Object>{};
+    if (theme != null) patch['theme'] = theme;
+    if (bg != null) patch['bg'] = bg;
+    if (patch.isEmpty) return;
+    await roomRef!.child('players/$myUid').update(patch);
     await roomRef!.update({'updatedAt': ServerValue.timestamp});
   }
 

@@ -154,6 +154,9 @@ class OnlineFriends {
   }
 
   /// Código público deste perfil (cria se não existir). Estável.
+  /// Reaponta o índice a cada abertura: se o UID mudou (reinstalação
+  /// em outro aparelho, nova identidade), o código volta a funcionar
+  /// em vez de apontar para um UID morto.
   Future<String> ensureFriendCode({
     required String profileId,
     required String name,
@@ -171,6 +174,13 @@ class OnlineFriends {
         'name': name.trim().isEmpty ? 'Jogador' : name.trim(),
         'updatedAt': ServerValue.timestamp,
       });
+      // Reaponta o índice (o UID pode ter mudado desde a criação).
+      try {
+        await _database.ref('friendCodes/$existing').set({
+          'uid': uid,
+          'profileId': profileId,
+        });
+      } catch (_) {}
       return existing;
     }
     final rnd = Random.secure();
@@ -194,6 +204,8 @@ class OnlineFriends {
   }
 
   /// Busca código MC-XXXXX -> {uid, profileId, name}.
+  /// Código de perfil apagado/reinstalado (UID morto): avisa como
+  /// expirado em vez de mandar o pedido para o vazio.
   Future<Map<String, String>?> lookupCode(String rawCode) async {
     final code = rawCode.trim().toUpperCase();
     if (code.isEmpty) return null;
@@ -205,12 +217,15 @@ class OnlineFriends {
     final profileId = (m['profileId'] ?? '').toString();
     if (uid.isEmpty) return null;
     var name = '';
+    var alive = false;
     try {
       final usnap = await _database.ref('users/$uid/profiles/$profileId').get();
       if (usnap.value is Map) {
+        alive = true;
         name = ((usnap.value as Map)['name'] ?? '').toString();
       }
     } catch (_) {}
+    if (!alive) throw const FormatException('stale');
     return {'uid': uid, 'profileId': profileId, 'name': name};
   }
 
@@ -332,8 +347,7 @@ class OnlineFriends {
     } catch (_) {}
   }
 
-  Stream<List<OnlineFriend>> watchFriends(String uid) {
-    return _database.ref('friends/$uid').onValue.map((event) {
+  Stream<List<OnlineFriend>> watchFriends(String uid) {    return _database.ref('friends/$uid').onValue.map((event) {
       final raw = event.snapshot.value;
       if (raw is! Map) return <OnlineFriend>[];
       final out = <OnlineFriend>[];
@@ -364,6 +378,26 @@ class OnlineFriends {
               value.map((k, v) => MapEntry(k.toString(), v)))));
     });
     out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return out;
+  }
+
+  /// Códigos de amigo de TODOS os perfis deste aparelho
+  /// ({profileId: MC-XXXXX}). Uma identidade (UID), um código por
+  /// perfil — é o ÚNICO código que o usuário precisa conhecer.
+  Future<Map<String, String>> friendCodesOnce() async {
+    final out = <String, String>{};
+    try {
+      final uid = await myUid;
+      final snap = await _database.ref('users/$uid/profiles').get();
+      if (snap.value is Map) {
+        (snap.value as Map).forEach((pid, v) {
+          if (v is Map) {
+            final code = (v['friendCode'] ?? '').toString();
+            if (code.isNotEmpty) out[pid.toString()] = code;
+          }
+        });
+      }
+    } catch (_) {}
     return out;
   }
 

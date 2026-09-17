@@ -45,6 +45,7 @@ flutter:
   assets:
     - assets/icons/
     - assets/icons/magic/
+    - assets/backgrounds/
 
 flutter_launcher_icons:
   android: true

@@ -84,10 +84,70 @@ class ExportService {
       final qty = (c['deck_qty'] ?? c['quantity'] ?? 1).toString();
       buf.writeln('${qty}x ${c['name'] ?? ''} [${c['set_code'] ?? ''}]');
     }
-    final safe = deckName.replaceAll(RegExp(r'[^\\w\\- ]+'), '').trim();
+    final safe = deckName.replaceAll(RegExp(r'[^\w\- ]+'), '').trim();
     final file = await _write(
       '${safe.isEmpty ? 'deck' : safe}.txt',
       buf.toString(),
+    );
+    await Share.shareXFiles([XFile(file.path)], text: 'Deck $deckName');
+  }
+
+  /// Faltantes do deck (Fase A §43): só o que falta, pronto p/ compra.
+  static Future<void> exportMissingTxt(String deckName, String body) async {
+    final safe = deckName.replaceAll(RegExp(r'[^\w\- ]+'), '').trim();
+    final file = await _write(
+      '${safe.isEmpty ? 'deck' : safe}_faltantes.txt',
+      body,
+    );
+    await Share.shareXFiles([XFile(file.path)], text: 'Faltantes $deckName');
+  }
+
+  static Future<void> exportMissingCsv(
+      String deckName, List<List<String>> rows) async {
+    final csv = const ListToCsvConverter().convert(rows);
+    final safe = deckName.replaceAll(RegExp(r'[^\w\- ]+'), '').trim();
+    final file = await _write(
+      '${safe.isEmpty ? 'deck' : safe}_faltantes.csv',
+      csv,
+    );
+    await Share.shareXFiles([XFile(file.path)], text: 'Faltantes $deckName');
+  }
+
+  /// Deck completo em JSON fiel (Fase A §36/§40): comandante, quantidades,
+  /// impressão/idioma quando conhecidos. Reimportável sem perda.
+  static Future<void> exportDeckJson(
+    String deckName, {
+    required String format,
+    int? commanderCardId,
+    String commanderName = '',
+    required List<Map<String, Object?>> cards,
+  }) async {
+    final payload = <String, Object?>{
+      'format': 'magic_collection_deck',
+      'version': 1,
+      'deck_name': deckName,
+      'game_format': format,
+      'commander': commanderCardId == null
+          ? null
+          : {'card_id': commanderCardId, 'name': commanderName},
+      'exported_at': DateTime.now().toUtc().toIso8601String(),
+      'cards': [
+        for (final c in cards)
+          {
+            'name': (c['name'] ?? '').toString(),
+            'quantity': (c['deck_qty'] ?? c['quantity'] ?? 1),
+            'set_code': (c['set_code'] ?? '').toString(),
+            'collector_number': (c['collector_number'] ?? '').toString(),
+            'lang': (c['lang'] ?? '').toString(),
+            'scryfall_id': (c['scryfall_id'] ?? '').toString(),
+            'oracle_id': (c['oracle_id'] ?? '').toString(),
+          },
+      ],
+    };
+    final safe = deckName.replaceAll(RegExp(r'[^\w\- ]+'), '').trim();
+    final file = await _write(
+      '${safe.isEmpty ? 'deck' : safe}.mcdeck.json',
+      const JsonEncoder.withIndent('  ').convert(payload),
     );
     await Share.shareXFiles([XFile(file.path)], text: 'Deck $deckName');
   }

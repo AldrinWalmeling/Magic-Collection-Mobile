@@ -618,12 +618,18 @@ class _DashboardPageState extends State<DashboardPage> {
           fontSize: 12,
         ),
       ),
-      trailing: Text(
-        '$qty× • ${CurrencyService.instance.formatUsd(price, _currency)}',
-        style: const TextStyle(
-          color: AppTheme.gold,
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
+      trailing: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 140),
+        child: Text(
+          '$qty× • ${CurrencyService.instance.formatUsd(price, _currency)}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.end,
+          style: const TextStyle(
+            color: AppTheme.gold,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
         ),
       ),
       onTap: () async {

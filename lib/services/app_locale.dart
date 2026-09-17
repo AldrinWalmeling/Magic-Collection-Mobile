@@ -127,6 +127,18 @@ class AppLocale {
       'es': 'Cuántas copias se ven detrás de la principal.',
       'zh': '主页牌后方显示几张。'
     },
+    'fmt_title': {
+      'pt': 'Formato da mesa',
+      'en': 'Table layout',
+      'es': 'Formato de mesa',
+      'zh': '牌桌布局'
+    },
+    'tb_functions': {
+      'pt': 'Funções da mesa',
+      'en': 'Table actions',
+      'es': 'Acciones de mesa',
+      'zh': '牌桌操作'
+    },
     'settings_display': {
       'pt': 'Exibição das cartas',
       'en': 'Card display',
@@ -230,6 +242,49 @@ class AppLocale {
       'en': 'Retry',
       'es': 'Reintentar',
       'zh': '重试'
+    },
+    'common_leave': {'pt': 'Sair', 'en': 'Leave', 'es': 'Salir', 'zh': '离开'},
+    'play_exit_title': {
+      'pt': 'Sair da mesa?',
+      'en': 'Leave the table?',
+      'es': '¿Salir de la mesa?',
+      'zh': '离开牌桌？'
+    },
+    'play_exit_room_body': {
+      'pt': 'Você sairá da sala {c} e a partida será encerrada neste aparelho.',
+      'en': 'You will leave room {c} and the match will end on this device.',
+      'es': 'Saldrás de la sala {c} y la partida terminará en este dispositivo.',
+      'zh': '你将离开房间 {c}，本设备上的对局将结束。'
+    },
+    'play_exit_host_body': {
+      'pt': 'A mesa será encerrada e os outros jogadores serão desconectados.',
+      'en': 'The table will be closed and other players will be disconnected.',
+      'es': 'La mesa se cerrará y los demás jugadores serán desconectados.',
+      'zh': '牌桌将关闭，其他玩家将被断开连接。'
+    },
+    'play_exit_match_body': {
+      'pt': 'A partida atual será encerrada neste aparelho.',
+      'en': 'The current match will end on this device.',
+      'es': 'La partida actual terminará en este dispositivo.',
+      'zh': '本设备上的当前对局将结束。'
+    },
+    'play_visual_pick': {
+      'pt': 'Mesa de quem?',
+      'en': "Whose table?",
+      'es': '¿Mesa de quién?',
+      'zh': '谁的桌面？'
+    },
+    'play_visual_mine_only': {
+      'pt': 'No online, muda só a sua mesa.',
+      'en': 'Online, only your table changes.',
+      'es': 'En línea, solo cambia tu mesa.',
+      'zh': '在线时，仅更改你自己的桌面。'
+    },
+    'play_visual_default': {
+      'pt': 'Padrão (global)',
+      'en': 'Default (global)',
+      'es': 'Predeterminado (global)',
+      'zh': '默认（全局）'
     },
     'common_hide_nav': {
       'pt': 'Esconder menu',
@@ -508,6 +563,168 @@ class AppLocale {
       'en': 'Import list',
       'es': 'Importar lista',
       'zh': '导入列表'
+    },
+    'dd_import_file': {
+      'pt': 'Do arquivo (.txt)',
+      'en': 'From file (.txt)',
+      'es': 'Desde archivo (.txt)',
+      'zh': '从文件（.txt）'
+    },
+    'av_complete': {
+      'pt': 'Completo na coleção',
+      'en': 'Complete in collection',
+      'es': 'Completo en la colección',
+      'zh': '收藏齐全'
+    },
+    'av_summary': {
+      'pt': '{o}/{t} cópias na coleção',
+      'en': '{o}/{t} copies in collection',
+      'es': '{o}/{t} copias en la colección',
+      'zh': '收藏中有 {o}/{t} 张'
+    },
+    'av_missing_btn': {
+      'pt': 'Ver faltantes',
+      'en': 'See missing',
+      'es': 'Ver faltantes',
+      'zh': '查看缺失'
+    },
+    'av_missing_title': {
+      'pt': 'Faltam {n} cartas',
+      'en': '{n} cards missing',
+      'es': 'Faltan {n} cartas',
+      'zh': '缺 {n} 张牌'
+    },
+    'av_missing_value': {
+      'pt': 'Valor aprox. do que falta: {v}',
+      'en': 'Approx. value of missing: {v}',
+      'es': 'Valor aprox. de lo que falta: {v}',
+      'zh': '缺失部分约价值：{v}'
+    },
+    'av_row': {
+      'pt': 'Precisa {need} • tem {owned} • faltam {missing}',
+      'en': 'Need {need} • own {owned} • miss {missing}',
+      'es': 'Necesita {need} • tiene {owned} • faltan {missing}',
+      'zh': '需要 {need} • 拥有 {owned} • 缺 {missing}'
+    },
+    'av_export_txt': {
+      'pt': 'TXT faltantes',
+      'en': 'Missing TXT',
+      'es': 'TXT faltantes',
+      'zh': '缺失 TXT'
+    },
+    'av_export_csv': {
+      'pt': 'CSV faltantes',
+      'en': 'Missing CSV',
+      'es': 'CSV faltantes',
+      'zh': '缺失 CSV'
+    },
+    'stats_title': {
+      'pt': 'Estatísticas',
+      'en': 'Statistics',
+      'es': 'Estadísticas',
+      'zh': '统计'
+    },
+    'stats_curve': {
+      'pt': 'Curva de mana',
+      'en': 'Mana curve',
+      'es': 'Curva de maná',
+      'zh': '法术力曲线'
+    },
+    'stats_types': {
+      'pt': 'Composição',
+      'en': 'Breakdown',
+      'es': 'Composición',
+      'zh': '构成'
+    },
+    'stats_mana': {
+      'pt': 'Fontes por cor (terrenos)',
+      'en': 'Sources by color (lands)',
+      'es': 'Fuentes por color (tierras)',
+      'zh': '按颜色划分来源（地）'
+    },
+    'stats_lands': {
+      'pt': 'terrenos',
+      'en': 'lands',
+      'es': 'tierras',
+      'zh': '地'
+    },
+    'stats_sources': {
+      'pt': 'fontes',
+      'en': 'sources',
+      'es': 'fuentes',
+      'zh': '来源'
+    },
+    'stats_cards_sources': {
+      'pt': 'cartas / fontes',
+      'en': 'cards / sources',
+      'es': 'cartas / fuentes',
+      'zh': '牌 / 来源'
+    },
+    'imp_title': {
+      'pt': 'Importar deck',
+      'en': 'Import deck',
+      'es': 'Importar mazo',
+      'zh': '导入套牌'
+    },
+    'imp_mode_new': {
+      'pt': 'Novo deck',
+      'en': 'New deck',
+      'es': 'Mazo nuevo',
+      'zh': '新套牌'
+    },
+    'imp_mode_replace': {
+      'pt': 'Substituir este',
+      'en': 'Replace this one',
+      'es': 'Reemplazar este',
+      'zh': '替换本套牌'
+    },
+    'imp_mode_append': {
+      'pt': 'Adicionar aqui',
+      'en': 'Add here',
+      'es': 'Añadir aquí',
+      'zh': '添加到此处'
+    },
+    'imp_mode_sub': {
+      'pt': 'Como importar a lista?',
+      'en': 'How to import the list?',
+      'es': '¿Cómo importar la lista?',
+      'zh': '如何导入列表？'
+    },
+    'imp_report': {
+      'pt': '{ok} identificadas • {fail} não reconhecidas',
+      'en': '{ok} identified • {fail} unrecognized',
+      'es': '{ok} identificadas • {fail} no reconocidas',
+      'zh': '已识别 {ok} • 未识别 {fail}'
+    },
+    'imp_avail': {
+      'pt': 'Faltam {n} cartas na coleção',
+      'en': '{n} cards missing from collection',
+      'es': 'Faltan {n} cartas en la colección',
+      'zh': '收藏中缺 {n} 张'
+    },
+    'imp_unidentified': {
+      'pt': 'Não reconhecidas: {n}',
+      'en': 'Unrecognized: {n}',
+      'es': 'No reconocidas: {n}',
+      'zh': '未识别：{n}'
+    },
+    'imp_from_file': {
+      'pt': 'Do arquivo (.txt, .json)',
+      'en': 'From file (.txt, .json)',
+      'es': 'Desde archivo (.txt, .json)',
+      'zh': '从文件（.txt、.json）'
+    },
+    'imp_empty': {
+      'pt': 'Nenhuma carta identificada no texto/arquivo.',
+      'en': 'No cards identified in the text/file.',
+      'es': 'Ninguna carta identificada en el texto/archivo.',
+      'zh': '文本/文件中未识别出牌。'
+    },
+    'dd_export_json': {
+      'pt': 'Exportar JSON',
+      'en': 'Export JSON',
+      'es': 'Exportar JSON',
+      'zh': '导出 JSON'
     },
     'dd_imported': {
       'pt': 'Importadas: {ok}. Não encontradas: {fail}.',
@@ -1758,6 +1975,44 @@ class AppLocale {
       'zh': '奥术'
     },
     'su_th_ember': {'pt': 'Brasa', 'en': 'Ember', 'es': 'Brasa', 'zh': '余烬'},
+    'su_th_ocean': {
+      'pt': 'Oceano',
+      'en': 'Ocean',
+      'es': 'Océano',
+      'zh': '海洋'
+    },
+    'su_th_blood': {
+      'pt': 'Sangue',
+      'en': 'Blood',
+      'es': 'Sangre',
+      'zh': '鲜血'
+    },
+    'su_side_top': {'pt': 'Topo', 'en': 'Top', 'es': 'Arriba', 'zh': '上方'},
+    'su_side_bottom': {
+      'pt': 'Base',
+      'en': 'Bottom',
+      'es': 'Abajo',
+      'zh': '下方'
+    },
+    'su_theme': {'pt': 'Tema', 'en': 'Theme', 'es': 'Tema', 'zh': '主题'},
+    'su_bg': {
+      'pt': 'Fundo',
+      'en': 'Background',
+      'es': 'Fondo',
+      'zh': '背景'
+    },
+    'su_bg_none': {
+      'pt': 'Sem imagem',
+      'en': 'No image',
+      'es': 'Sin imagen',
+      'zh': '无图片'
+    },
+    'su_players_mode': {
+      'pt': 'Jogadores',
+      'en': 'Players',
+      'es': 'Jugadores',
+      'zh': '玩家'
+    },
     'su_fmt_custom': {
       'pt': 'Personalizado',
       'en': 'Custom',
@@ -2037,16 +2292,16 @@ class AppLocale {
       'zh': '你的桌面'
     },
     'play_my_tokens': {
-      'pt': 'Suas fichas',
-      'en': 'Your tokens',
-      'es': 'Tus fichas',
-      'zh': '你的衍生物'
+      'pt': 'Suas cartas',
+      'en': 'Your cards',
+      'es': 'Tus cartas',
+      'zh': '你的牌'
     },
     'play_opp_tokens': {
-      'pt': 'Fichas de',
-      'en': 'Tokens of',
-      'es': 'Fichas de',
-      'zh': '的衍生物'
+      'pt': 'Cartas de',
+      'en': 'Cards of',
+      'es': 'Cartas de',
+      'zh': '的牌'
     },
     'play_shared': {
       'pt': 'Mesa (compartilhadas)',
@@ -2055,22 +2310,22 @@ class AppLocale {
       'zh': '桌面（共享）'
     },
     'play_no_tokens': {
-      'pt': 'Nenhuma ficha sua.\nToque em + para criar.',
-      'en': 'No tokens yet.\nTap + to create.',
-      'es': 'Sin fichas.\nToca + para crear.',
-      'zh': '还没有衍生物。\n点 + 创建。'
+      'pt': 'Nenhuma carta sua.\nToque em + para criar.',
+      'en': 'No cards yet.\nTap + to create.',
+      'es': 'Sin cartas.\nToca + para crear.',
+      'zh': '还没有牌。\n点 + 创建。'
     },
     'play_no_tokens_short': {
-      'pt': 'Sem fichas',
-      'en': 'No tokens',
-      'es': 'Sin fichas',
-      'zh': '无衍生物'
+      'pt': 'Sem cartas',
+      'en': 'No cards',
+      'es': 'Sin cartas',
+      'zh': '无牌'
     },
     'play_tokens_count': {
-      'pt': 'fichas',
-      'en': 'tokens',
-      'es': 'fichas',
-      'zh': '衍生物'
+      'pt': 'cartas',
+      'en': 'cards',
+      'es': 'cartas',
+      'zh': '牌'
     },
     'play_add_token': {
       'pt': 'Adicionar ficha',
@@ -2449,6 +2704,407 @@ class AppLocale {
       'en': 'Description/rules (e.g. Flying)',
       'es': 'Descripción (ej. Vuela)',
       'zh': '描述/规则（例：飞行）'
+    },
+    'dlg_cost': {
+      'pt': 'Custo (ex. 2GG ou X)',
+      'en': 'Cost (e.g. 2GG or X)',
+      'es': 'Coste (ej. 2GG o X)',
+      'zh': '费用（例：2GG 或 X）'
+    },
+    'dlg_type': {
+      'pt': 'Tipo',
+      'en': 'Type',
+      'es': 'Tipo',
+      'zh': '类别'
+    },
+    'dlg_type_hint': {
+      'pt': 'Criatura — Elfo',
+      'en': 'Creature — Elf',
+      'es': 'Criatura — Elfo',
+      'zh': '生物 — 精灵'
+    },
+    'dlg_abilities': {
+      'pt': 'Habilidades',
+      'en': 'Abilities',
+      'es': 'Habilidades',
+      'zh': '异能'
+    },
+    'dlg_save_template': {
+      'pt': 'Salvar modelo',
+      'en': 'Save template',
+      'es': 'Guardar modelo',
+      'zh': '保存模板'
+    },
+    'dlg_template_saved': {
+      'pt': 'Modelo salvo em Minhas cartas.',
+      'en': 'Template saved under My cards.',
+      'es': 'Modelo guardado en Mis cartas.',
+      'zh': '模板已保存到“我的牌”。'
+    },
+    'dlg_name_needed': {
+      'pt': 'Dê um nome antes de salvar.',
+      'en': 'Name it before saving.',
+      'es': 'Ponle nombre antes de guardar.',
+      'zh': '保存前请先命名。'
+    },
+    'tpl_mine': {
+      'pt': 'Minhas cartas',
+      'en': 'My cards',
+      'es': 'Mis cartas',
+      'zh': '我的牌'
+    },
+    'ab_flying': {'pt': 'Voar', 'en': 'Flying', 'es': 'Vuela', 'zh': '飞行'},
+    'ab_vigilance': {
+      'pt': 'Vigilância',
+      'en': 'Vigilance',
+      'es': 'Vigilancia',
+      'zh': '警戒'
+    },
+    'ab_lifelink': {
+      'pt': 'Vínculo com a vida',
+      'en': 'Lifelink',
+      'es': 'Vínculo vital',
+      'zh': '系命'
+    },
+    'ab_deathtouch': {
+      'pt': 'Toque mortífero',
+      'en': 'Deathtouch',
+      'es': 'Toque mortal',
+      'zh': '死触'
+    },
+    'ab_haste': {'pt': 'Ímpeto', 'en': 'Haste', 'es': 'Prisa', 'zh': '敏捷'},
+    'ab_trample': {
+      'pt': 'Atropelar',
+      'en': 'Trample',
+      'es': 'Arrolla',
+      'zh': '践踏'
+    },
+    'ab_menace': {
+      'pt': 'Ameaça',
+      'en': 'Menace',
+      'es': 'Amenaza',
+      'zh': '威慑'
+    },
+    'ab_reach': {
+      'pt': 'Alcance',
+      'en': 'Reach',
+      'es': 'Alcance',
+      'zh': '延势'
+    },
+    'ab_first_strike': {
+      'pt': 'Iniciativa',
+      'en': 'First strike',
+      'es': 'Daña primero',
+      'zh': '先攻'
+    },
+    'ab_double_strike': {
+      'pt': 'Golpe duplo',
+      'en': 'Double strike',
+      'es': 'Daña dos veces',
+      'zh': '连击'
+    },
+    'ab_hexproof': {
+      'pt': 'Hexproof',
+      'en': 'Hexproof',
+      'es': 'Antimaldición',
+      'zh': '辟邪'
+    },
+    'ab_indestructible': {
+      'pt': 'Indestrutível',
+      'en': 'Indestructible',
+      'es': 'Indestructible',
+      'zh': '不灭'
+    },
+    'token_utility': {
+      'pt': 'Utilitária',
+      'en': 'Utility',
+      'es': 'Utilidad',
+      'zh': '功能牌'
+    },
+    'token_base': {'pt': 'base', 'en': 'base', 'es': 'base', 'zh': '基础'},
+    'token_untapped': {
+      'pt': 'Desvirada',
+      'en': 'Untapped',
+      'es': 'Enderezada',
+      'zh': '未横置'
+    },
+    'token_options': {
+      'pt': 'Opções',
+      'en': 'Options',
+      'es': 'Opciones',
+      'zh': '选项'
+    },
+    'token_marker': {
+      'pt': 'Criar marcador',
+      'en': 'Create marker',
+      'es': 'Crear marcador',
+      'zh': '创建标记'
+    },
+    'token_marker_sub': {
+      'pt': 'Global ou com esta ficha dentro',
+      'en': 'Global or holding this card',
+      'es': 'Global o con esta carta dentro',
+      'zh': '全局或包含此牌'
+    },
+    'mk_title': {
+      'pt': 'Marcador',
+      'en': 'Marker',
+      'es': 'Marcador',
+      'zh': '标记'
+    },
+    'mk_name_hint': {
+      'pt': 'Ex. Veneno, Energia, Tesouros',
+      'en': 'E.g. Poison, Energy, Treasures',
+      'es': 'Ej. Veneno, Energía, Tesoros',
+      'zh': '例：中毒、能量、宝物'
+    },
+    'mk_global': {
+      'pt': 'Global (vale p/ a mesa toda)',
+      'en': 'Global (whole table)',
+      'es': 'Global (toda la mesa)',
+      'zh': '全局（整桌有效）'
+    },
+    'mk_global_sub': {
+      'pt': 'Desmarque para colocar fichas dentro',
+      'en': 'Uncheck to hold specific cards',
+      'es': 'Desmarca para meter cartas dentro',
+      'zh': '取消勾选以放入指定牌'
+    },
+    'mk_members': {
+      'pt': 'Fichas dentro do marcador',
+      'en': 'Cards inside the marker',
+      'es': 'Cartas dentro del marcador',
+      'zh': '标记内的牌'
+    },
+    'mk_scope_n': {
+      'pt': '{n} ficha(s) dentro',
+      'en': '{n} card(s) inside',
+      'es': '{n} carta(s) dentro',
+      'zh': '内含 {n} 张牌'
+    },
+    'mk_edit_members': {
+      'pt': 'Editar fichas',
+      'en': 'Edit cards',
+      'es': 'Editar cartas',
+      'zh': '编辑牌'
+    },
+    'mk_new_short': {
+      'pt': 'Marcador',
+      'en': 'Marker',
+      'es': 'Marcador',
+      'zh': '标记'
+    },
+    'mk_board': {
+      'pt': 'Marcadores da mesa',
+      'en': 'Table markers',
+      'es': 'Marcadores de la mesa',
+      'zh': '桌面标记'
+    },
+    'fr_code_dead': {
+      'pt': 'Esse código expirou (a pessoa trocou de aparelho). Peça o código novo.',
+      'en': 'That code expired (they switched devices). Ask for the new code.',
+      'es': 'Ese código expiró (cambió de aparato). Pide el código nuevo.',
+      'zh': '该代码已过期（对方更换了设备），请索取新代码。'
+    },
+    'mk_add': {
+      'pt': 'Adicionar marcador…',
+      'en': 'Add marker…',
+      'es': 'Añadir marcador…',
+      'zh': '添加标记…'
+    },
+    'mk_type': {
+      'pt': 'Tipo de marcador',
+      'en': 'Marker type',
+      'es': 'Tipo de marcador',
+      'zh': '标记类型'
+    },
+    'mk_kind_custom': {
+      'pt': 'Contador',
+      'en': 'Counter',
+      'es': 'Contador',
+      'zh': '计数'
+    },
+    'mk_kind_plus': {
+      'pt': '+1/+1',
+      'en': '+1/+1',
+      'es': '+1/+1',
+      'zh': '+1/+1'
+    },
+    'mk_kind_minus': {
+      'pt': '−1/−1',
+      'en': '-1/-1',
+      'es': '-1/-1',
+      'zh': '-1/-1'
+    },
+    'mk_custom_ex': {
+      'pt': 'Ex.: Energia ×5 — só conta, não muda carta.',
+      'en': 'E.g. Energy ×5 — counts only, changes no card.',
+      'es': 'Ej. Energía ×5 — solo cuenta, no cambia cartas.',
+      'zh': '例：能量 ×5——仅计数，不改变牌。'
+    },
+    'mk_plus_ex': {
+      'pt': 'Ex.: +2 em {n} — carimba +1/+1 de verdade.',
+      'en': 'E.g. +2 on {n} — stamps real +1/+1.',
+      'es': 'Ej. +2 en {n} — pone +1/+1 de verdad.',
+      'zh': '例：{n} +2——放置真实 +1/+1。'
+    },
+    'mk_minus_ex': {
+      'pt': 'Ex.: +2 em {n} — carimba −1/−1 de verdade.',
+      'en': 'E.g. +2 on {n} — stamps real -1/-1.',
+      'es': 'Ej. +2 en {n} — pone -1/-1 de verdad.',
+      'zh': '例：{n} +2——放置真实 -1/-1。'
+    },
+    'mk_plus_name': {
+      'pt': 'Marcador +1/+1',
+      'en': '+1/+1 marker',
+      'es': 'Marcador +1/+1',
+      'zh': '+1/+1 标记'
+    },
+    'mk_minus_name': {
+      'pt': 'Marcador −1/−1',
+      'en': '-1/-1 marker',
+      'es': 'Marcador -1/-1',
+      'zh': '-1/-1 标记'
+    },
+    'mk_custom_name': {
+      'pt': 'Contador',
+      'en': 'Counter',
+      'es': 'Contador',
+      'zh': '计数'
+    },
+    'mk_stamp_where': {
+      'pt': 'Carimbar em quais cartas?',
+      'en': 'Stamp on which cards?',
+      'es': '¿Poner en qué cartas?',
+      'zh': '放置到哪些牌上？'
+    },
+    'mk_quick_custom': {
+      'pt': 'Contador',
+      'en': 'Counter',
+      'es': 'Contador',
+      'zh': '计数'
+    },
+    'mk_quick_plus': {
+      'pt': '+1/+1',
+      'en': '+1/+1',
+      'es': '+1/+1',
+      'zh': '+1/+1'
+    },
+    'mk_quick_minus': {
+      'pt': '−1/−1',
+      'en': '-1/-1',
+      'es': '-1/-1',
+      'zh': '-1/-1'
+    },
+    'ocr_title': {
+      'pt': 'Escanear carta',
+      'en': 'Scan card',
+      'es': 'Escanear carta',
+      'zh': '扫描牌'
+    },
+    'ocr_hint': {
+      'pt': 'Enquadre o nome no retângulo e fotografe.',
+      'en': 'Frame the name and shoot.',
+      'es': 'Encuadra el nombre y fotografía.',
+      'zh': '将名称框入矩形后拍照。'
+    },
+    'ocr_pick': {
+      'pt': 'Toque no nome certo:',
+      'en': 'Tap the right name:',
+      'es': 'Toca el nombre correcto:',
+      'zh': '点击正确的名称：'
+    },
+    'ocr_noread': {
+      'pt': 'Não li nada. Aproxime e tente de novo.',
+      'en': 'Nothing read. Get closer and retry.',
+      'es': 'No leí nada. Acércate e inténtalo.',
+      'zh': '未能识别，靠近后重试。'
+    },
+    'ocr_fail': {
+      'pt': 'Falha na leitura.',
+      'en': 'Read failed.',
+      'es': 'Falló la lectura.',
+      'zh': '识别失败。'
+    },
+    'life_poison': {
+      'pt': 'Veneno (10+ mata)',
+      'en': 'Poison (10+ kills)',
+      'es': 'Veneno (10+ mata)',
+      'zh': '中毒（10+ 致死）'
+    },
+    'life_commander': {
+      'pt': 'Dano de comandante',
+      'en': 'Commander damage',
+      'es': 'Daño de comandante',
+      'zh': '指挥官伤害'
+    },
+    'life_commander_sub': {
+      'pt': '21+ do mesmo comandante elimina',
+      'en': '21+ from one commander eliminates',
+      'es': '21+ del mismo comandante elimina',
+      'zh': '同一指挥官 21+ 点即淘汰'
+    },
+    'life_counters': {
+      'pt': 'Contadores do jogador',
+      'en': 'Player counters',
+      'es': 'Contadores del jugador',
+      'zh': '玩家指示物'
+    },
+    'life_counter_hint': {
+      'pt': 'Novo (ex. Energia)',
+      'en': 'New (e.g. Energy)',
+      'es': 'Nuevo (ej. Energía)',
+      'zh': '新建（例：能量）'
+    },
+    'life_moved': {
+      'pt': 'Vida {a} → {b}',
+      'en': 'Life {a} → {b}',
+      'es': 'Vidas {a} → {b}',
+      'zh': '生命 {a} → {b}'
+    },
+    'art_pow': {'pt': 'P', 'en': 'P', 'es': 'F', 'zh': '攻'},
+    'art_tou': {'pt': 'R', 'en': 'T', 'es': 'R', 'zh': '防'},
+    'art_filter': {
+      'pt': 'Filtrar (P/R e habilidades)',
+      'en': 'Filter (P/T and abilities)',
+      'es': 'Filtrar (F/R y habilidades)',
+      'zh': '筛选（攻防和异能）'
+    },
+    'death_poison': {
+      'pt': '{n} morreu de veneno (10+)!',
+      'en': '{n} died of poison (10+)!',
+      'es': '¡{n} murió por veneno (10+)!',
+      'zh': '{n} 因中毒（10+）而死！'
+    },
+    'death_commander': {
+      'pt': '{n} morreu para o comandante de {c} (21+)!',
+      'en': '{n} died to {c}\'s commander (21+)!',
+      'es': '¡{n} murió ante el comandante de {c} (21+)!',
+      'zh': '{n} 死于 {c} 的指挥官（21+）！'
+    },
+    'settings_keywords': {
+      'pt': 'Habilidades na carta',
+      'en': 'Abilities on the card',
+      'es': 'Habilidades en la carta',
+      'zh': '牌上的异能'
+    },
+    'settings_keywords_sub': {
+      'pt': 'Abaixo do nome ou no centro (como a descrição)',
+      'en': 'Below the name or centered (like the description)',
+      'es': 'Debajo del nombre o en el centro (como la descripción)',
+      'zh': '名称下方或居中（像描述一样）'
+    },
+    'settings_kw_below': {
+      'pt': 'Abaixo do nome',
+      'en': 'Below the name',
+      'es': 'Debajo del nombre',
+      'zh': '名称下方'
+    },
+    'settings_kw_center': {
+      'pt': 'No centro',
+      'en': 'Centered',
+      'es': 'En el centro',
+      'zh': '居中'
     },
   };
 }

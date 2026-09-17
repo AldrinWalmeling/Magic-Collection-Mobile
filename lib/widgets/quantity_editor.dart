@@ -75,6 +75,7 @@ class _QuantityDialogState extends State<_QuantityDialog> {
       preview = n;
     }
     return AlertDialog(
+      scrollable: true,
       title: Text('Quantidade (atual: ${widget.current})'),
       content: Column(
         mainAxisSize: MainAxisSize.min,

@@ -39,6 +39,9 @@ class _ProfilesPageState extends State<ProfilesPage> {
   String _fbCode = '';
   String _fbProfileId = '';
   String _fbProfileName = '';
+  // UM código por perfil (MC-XXXXX), mesma identidade do aparelho.
+  // É o único código exibido/copiado — sem segunda "id" legada.
+  Map<String, String> _fbCodes = {};
   List<FriendRequest> _fbRequests = [];
   List<OnlineFriend> _fbFriends = [];
   final Map<String, Map<String, dynamic>> _fbPresence = {};
@@ -127,6 +130,11 @@ class _ProfilesPageState extends State<ProfilesPage> {
         _fbProfileId = ref['id']!;
         _fbProfileName = ref['name']!;
       });
+      // Códigos de todos os perfis (tiles mostram o de cada um).
+      _friendsApi.friendCodesOnce().then((codes) {
+        if (!mounted) return;
+        setState(() => _fbCodes = codes);
+      });
       await _friendsApi.setPresence(name: ref['name']!);
       _fbReqSub?.cancel();
       _fbFrSub?.cancel();
@@ -194,8 +202,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(AppLocale.t('fr_notfound'))));
         return;
-      }
-      await _friendsApi.sendRequest(
+      }      await _friendsApi.sendRequest(
         toUid: found['uid']!,
         toProfile: found['profileId']!,
         fromProfile: _fbProfileId,
@@ -208,8 +215,10 @@ class _ProfilesPageState extends State<ProfilesPage> {
           .showSnackBar(SnackBar(content: Text(AppLocale.t('fr_sent'))));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${AppLocale.t('cl_add_error')} $e')));
+      final msg = e is FormatException && e.message == 'stale'
+          ? AppLocale.t('fr_code_dead')
+          : '${AppLocale.t('cl_add_error')} $e';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     }
   }
 
@@ -301,6 +310,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
     final result = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
+        scrollable: true,
         title: Text(title),
         content: TextField(controller: c, autofocus: true),
         actions: [
@@ -448,10 +458,10 @@ class _ProfilesPageState extends State<ProfilesPage> {
 
   Future<void> _addFriend() async {
     final nameC = TextEditingController();
-    final codeC = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
+        scrollable: true,
         title: Text(AppLocale.t('prof_addfriend')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -462,11 +472,6 @@ class _ProfilesPageState extends State<ProfilesPage> {
                 textCapitalization: TextCapitalization.words,
                 decoration:
                     InputDecoration(labelText: AppLocale.t('prof_name_ex'))),
-            TextField(
-                controller: codeC,
-                textCapitalization: TextCapitalization.characters,
-                decoration:
-                    InputDecoration(labelText: AppLocale.t('prof_hiscode'))),
           ],
         ),
         actions: [
@@ -480,11 +485,9 @@ class _ProfilesPageState extends State<ProfilesPage> {
       ),
     );
     final name = nameC.text.trim();
-    final code = codeC.text.trim().toUpperCase();
     _laterDispose(nameC);
-    _laterDispose(codeC);
     if (ok != true) return;
-    if (name.isEmpty || code.isEmpty) {
+    if (name.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(AppLocale.t('prof_fill'))));
@@ -494,7 +497,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
     await AppDatabase.instance.db.insert('friends', {
       'id': const Uuid().v4().substring(0, 8),
       'name': name,
-      'code': code,
+      'code': '',
     });
     await _reload();
   }
@@ -616,14 +619,15 @@ class _ProfilesPageState extends State<ProfilesPage> {
                             ],
                           ),
                           title: Text((f['name'] ?? '').toString(),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style:
                                   const TextStyle(fontWeight: FontWeight.bold)),
-                          subtitle: Text(
-                              '${AppLocale.t('prof_code')}: ${f['code'] ?? ''}${online ? ' • ${AppLocale.t('prof_online')}' : ''}',
-                              style: TextStyle(
-                                  color: online
-                                      ? Colors.green
-                                      : AppTheme.textMuted)),
+                          subtitle: online
+                              ? Text('• ${AppLocale.t('prof_online')}',
+                                  style: const TextStyle(
+                                      color: Colors.green))
+                              : null,
                           trailing: IconButton(
                             icon: const Icon(Icons.delete_outline),
                             onPressed: () async {
@@ -730,8 +734,11 @@ class _ProfilesPageState extends State<ProfilesPage> {
                         size: 14, color: AppTheme.gold),
                   ),
                   title: Text(r.fromName,
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
                   subtitle: Text(r.fromCode,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: AppTheme.textMuted, fontSize: 12)),
                   trailing: Row(
@@ -802,8 +809,11 @@ class _ProfilesPageState extends State<ProfilesPage> {
       ),
       title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(status,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
-              color: online ? Colors.green : AppTheme.textMuted, fontSize: 12)),
+              color: online ? Colors.green : AppTheme.textMuted,
+              fontSize: 12)),
       trailing: IconButton(
         icon: const Icon(Icons.delete_outline, size: 18),
         padding: EdgeInsets.zero,
@@ -815,7 +825,9 @@ class _ProfilesPageState extends State<ProfilesPage> {
 
   Widget _profileTile(Map<String, Object?> pr) {
     final isActive = pr['database_path'] == _activePath;
-    final code = (pr['code'] ?? '').toString();
+    // Código ÚNICO do perfil (online). Sem ele (offline), não mostra
+    // nada — o legado local foi aposentado da UI.
+    final code = _fbCodes[(pr['id'] ?? '').toString()] ?? '';
     return Card(
       child: ListTile(
         leading: CircleAvatar(
@@ -825,6 +837,8 @@ class _ProfilesPageState extends State<ProfilesPage> {
                   color: Color(0xFF14161D), fontWeight: FontWeight.bold)),
         ),
         title: Text((pr['name'] ?? '').toString(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

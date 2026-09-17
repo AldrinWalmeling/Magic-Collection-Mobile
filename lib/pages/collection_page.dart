@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -81,6 +82,9 @@ class _CollectionPageState extends State<CollectionPage> {
 
   bool _favoritesOnly = false;
 
+  // Filtro textual de habilidades/e-feitos da carta (oracle_text/keywords).
+  String _abilityFilter = 'all';
+
   bool _showFilters = false;
 
   bool _collectionViewGrid = true; // grade (padrão) ou lista
@@ -160,6 +164,483 @@ class _CollectionPageState extends State<CollectionPage> {
     'colorless'
 
   ];
+
+  // A lista é intencionalmente baseada nos termos/efeitos encontrados
+  // no texto de regras da carta, não em uma coluna nova no banco.
+  static const _orderLabels = <String, String>{
+    'name ASC': 'Nome (A–Z)',
+    'name DESC': 'Nome (Z–A)',
+    'price_usd DESC': 'Valor (maior → menor)',
+    'price_usd ASC': 'Valor (menor → maior)',
+    'set_name ASC': 'Edição (A–Z)',
+    'quantity DESC': 'Quantidade (maior → menor)',
+    'quantity ASC': 'Quantidade (menor → maior)',
+  };
+
+  static const _abilityLabels = <String, String>{
+    'all': 'Todas',
+    'flying': 'Voar',
+    'lifelink': 'Lifelink',
+    'deathtouch': 'Toque mortífero',
+    'first_strike': 'First strike',
+    'double_strike': 'Double strike',
+    'haste': 'Ímpeto',
+    'hexproof': 'Resistência à magia (Hexproof)',
+    'indestructible': 'Indestrutível',
+    'menace': 'Ameaçar',
+    'reach': 'Alcance',
+    'trample': 'Atropelar',
+    'vigilance': 'Vigilância',
+    'ward': 'Ward',
+    'flash': 'Flash',
+    'defender': 'Defensor',
+    'sacrifice': 'Sacrificar',
+    'graveyard_return': 'Retornar do cemitério',
+    'exile': 'Exilar',
+    'destroy': 'Destruir',
+    'discard': 'Descartar',
+    'draw': 'Comprar carta',
+    'counter': 'Anular / Counter',
+    'create_token': 'Criar ficha',
+    'mill': 'Milling',
+    'scry': 'Scry',
+    'gain_life': 'Ganhar vida',
+    'lose_life': 'Perder vida',
+  };
+
+  static const _cp1252Bytes = <int, int>{
+    0x20AC: 0x80,
+    0x201A: 0x82,
+    0x0192: 0x83,
+    0x201E: 0x84,
+    0x2026: 0x85,
+    0x2020: 0x86,
+    0x2021: 0x87,
+    0x02C6: 0x88,
+    0x2030: 0x89,
+    0x0160: 0x8A,
+    0x2039: 0x8B,
+    0x0152: 0x8C,
+    0x017D: 0x8E,
+    0x2018: 0x91,
+    0x2019: 0x92,
+    0x201C: 0x93,
+    0x201D: 0x94,
+    0x2022: 0x95,
+    0x2013: 0x96,
+    0x2014: 0x97,
+    0x02DC: 0x98,
+    0x2122: 0x99,
+    0x0161: 0x9A,
+    0x203A: 0x9B,
+    0x0153: 0x9C,
+    0x017E: 0x9E,
+    0x0178: 0x9F,
+  };
+
+  static int? _mojibakeByte(int rune) =>
+      _cp1252Bytes[rune] ?? (rune <= 0xFF ? rune : null);
+
+  static String _repairMojibake(String value) {
+    var current = value;
+
+    // Corrige cadeias UTF-8 interpretadas como Windows-1252/Latin-1.
+    // Fazemos algumas passagens porque alguns dados podem ter sido
+    // codificados duas vezes antes de chegar ao banco.
+    for (var pass = 0; pass < 4; pass++) {
+      final runes = current.runes.toList();
+      final out = StringBuffer();
+      var changed = false;
+
+      for (var i = 0; i < runes.length;) {
+        final first = runes[i];
+
+        int? decodedLength;
+        List<int>? bytes;
+
+        if ((first == 0xC2 || first == 0xC3) && i + 1 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          if (second != null) {
+            bytes = [first, second];
+            decodedLength = 2;
+          }
+        } else if (first == 0xE2 && i + 2 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          final third = _mojibakeByte(runes[i + 2]);
+          if (second != null && third != null) {
+            bytes = [first, second, third];
+            decodedLength = 3;
+          }
+        } else if (first == 0xF0 && i + 3 < runes.length) {
+          final second = _mojibakeByte(runes[i + 1]);
+          final third = _mojibakeByte(runes[i + 2]);
+          final fourth = _mojibakeByte(runes[i + 3]);
+          if (second != null && third != null && fourth != null) {
+            bytes = [first, second, third, fourth];
+            decodedLength = 4;
+          }
+        }
+
+        if (bytes != null && decodedLength != null) {
+          try {
+            out.write(utf8.decode(bytes));
+            i += decodedLength;
+            changed = true;
+            continue;
+          } catch (_) {
+            // Sequência legítima/ambígua: preserva os caracteres originais.
+          }
+        }
+
+        out.write(String.fromCharCode(first));
+        i++;
+      }
+
+      final next = out.toString();
+      if (!changed || next == current) break;
+      current = next;
+    }
+
+    return current;
+  }
+
+  static Object? _sanitizeValue(Object? value) {
+    // Preserva a estrutura/tipo original retornado pelo banco/API.
+    // Strings JSON (como card_faces/card_printings) continuam Strings;
+    // o parser específico de habilidades é que as decodifica quando necessário.
+    if (value is String) return _repairMojibake(value);
+
+    if (value is Map) {
+      return value.map(
+        (key, item) => MapEntry(
+          key.toString(),
+          _sanitizeValue(item),
+        ),
+      );
+    }
+
+    if (value is Iterable) {
+      return value.map(_sanitizeValue).toList(growable: false);
+    }
+
+    return value;
+  }
+
+  static Map<String, Object?> _sanitizeDbCard(
+    Map<String, Object?> card,
+  ) {
+    final sanitized = _sanitizeValue(card);
+    if (sanitized is Map) {
+      return sanitized.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    return Map<String, Object?>.of(card);
+  }
+
+  static Map<String, dynamic> _sanitizeApiCard(
+    Map<String, dynamic> card,
+  ) {
+    final sanitized = _sanitizeValue(card);
+    if (sanitized is Map) {
+      return sanitized.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    return Map<String, dynamic>.of(card);
+  }
+
+  static String _abilityRaw(Map<String, Object?> card) {
+    final parts = <String>[];
+
+    void collect(Object? value) {
+      if (value == null) return;
+
+      if (value is String) {
+        final repaired = _repairMojibake(value).trim().toLowerCase();
+
+        if ((repaired.startsWith('[') || repaired.startsWith('{'))) {
+          try {
+            final decoded = jsonDecode(repaired);
+            collect(decoded);
+            return;
+          } catch (_) {}
+        }
+
+        if (repaired.isNotEmpty) parts.add(repaired);
+        return;
+      }
+
+      if (value is Map) {
+        for (final entry in value.entries) {
+          final key = entry.key.toString().toLowerCase();
+          if (key == 'oracle_text' ||
+              key == 'printed_text' ||
+              key == 'keywords' ||
+              key == 'type_line' ||
+              key == 'printed_type_line') {
+            collect(entry.value);
+          } else if (key == 'card_faces' ||
+              key == 'faces' ||
+              key == 'card_printings') {
+            collect(entry.value);
+          }
+        }
+        return;
+      }
+
+      if (value is Iterable) {
+        for (final item in value) {
+          collect(item);
+        }
+        return;
+      }
+
+      collect(value.toString());
+    }
+
+    collect(card['oracle_text']);
+    collect(card['printed_text']);
+    collect(card['keywords']);
+    collect(card['type_line']);
+    collect(card['printed_type_line']);
+    collect(card['card_faces']);
+    collect(card['faces']);
+    collect(card['card_printings']);
+
+    return parts.join(' ');
+  }
+
+  static bool _containsAny(String raw, List<String> terms) =>
+      terms.any(raw.contains);
+
+  static bool _matchesAbility(Map<String, Object?> card, String ability) {
+    if (ability == 'all') return true;
+    final raw = _abilityRaw(card);
+
+    switch (ability) {
+      case 'flying':
+        return _containsAny(raw, [
+          'flying', 'voar', 'voa', 'voadora', 'vuela', 'volar', 'vol',
+          'volare', 'fliegend', 'fliegen', 'volare', '飛行', '비행',
+          'летает', 'полет', '飞行', '飛行',
+        ]);
+      case 'lifelink':
+        return _containsAny(raw, [
+          'lifelink', 'vínculo com a vida', 'vinculo com a vida',
+          'vínculo con la vida', 'vinculo con la vida', 'lien de vie',
+          'lebensverknüpfung', 'lebensverknupfung', 'legame vitale',
+          'vínculo vital', '絆魂', '생명연결', 'связь с жизнью', '系命', '繫命',
+        ]);
+      case 'deathtouch':
+        return _containsAny(raw, [
+          'deathtouch', 'toque mortífero', 'toque mortal', 'contact mortel',
+          'todesberührung', 'todesberuhrung', 'tocco letale', 'toque letal',
+          '接死', '치명타', 'смертельное касание', '死触', '死觸',
+        ]);
+      case 'first_strike':
+        return _containsAny(raw, [
+          'first strike', 'initiative', 'iniciativa', 'daña primero',
+          'dano primero', 'dança primeiro', 'erstschlag', 'attacco improvviso',
+          '先制攻撃', '선제공격', 'первый удар', '先攻', '先手攻撃',
+        ]);
+      case 'double_strike':
+        return _containsAny(raw, [
+          'double strike', 'golpe duplo', 'golpe doble', 'double initiative',
+          'doppio attacco', 'erst- und doppelschlag', 'double strike',
+          '二段攻撃', '이단 공격', 'двойной удар', '二重先制',
+        ]);
+      case 'haste':
+        return _containsAny(raw, [
+          'haste', 'ímpeto', 'impeto', 'prisa', 'rapidité', 'eile',
+          'rapidità', 'rapidez', '速攻', '신속', 'ускорение', '敏捷',
+        ]);
+      case 'hexproof':
+        return _containsAny(raw, [
+          'hexproof', 'resistência à magia', 'resistencia a magia',
+          'antimalefício', 'antimaleficio', 'antimaleficio', 'défense talismanique',
+          'verhexungsfluchsicherheit', 'antimalocchio', '呪禁', '방호',
+          'порчеустойчивость', '辟邪', '辟邪',
+        ]);
+      case 'indestructible':
+        return _containsAny(raw, [
+          'indestructible', 'indestrutível', 'indestructivel', 'indestructible',
+          'indestructible', 'unzerstörbar', 'indistruttibile', '破壊不能',
+          '무적', 'неразрушимый', '不灭', '不滅',
+        ]);
+      case 'menace':
+        return _containsAny(raw, [
+          'menace', 'ameaçar', 'ameaçador', 'amenaza', 'menace', 'bedrohlich',
+          'minacciare', 'menace', '威迫', '위협', 'угроза', '威慑', '威懾',
+        ]);
+      case 'reach':
+        return _containsAny(raw, [
+          'reach', 'alcance', 'alcanzar', 'portée', 'reichweite', 'portata',
+          'alcance', '到達', '대공', 'достижимость', '延到',
+        ]);
+      case 'trample':
+        return _containsAny(raw, [
+          'trample', 'atropelar', 'atropelo', 'arrollar', 'piétinement',
+          'überrennen', 'travolgere', 'atropellare', '践踏', '돌진',
+          'пробивное', '践踏',
+        ]);
+      case 'vigilance':
+        return _containsAny(raw, [
+          'vigilance', 'vigilância', 'vigilancia', 'vigilanz', 'vigilanza',
+          'vigilancia', '警戒', '경계', 'бдительность', '警戒',
+        ]);
+      case 'ward':
+        return _containsAny(raw, [
+          'ward', 'salvaguarda', 'resguardo', 'proteção', 'proteccion',
+          'ward', 'schutz', 'tutela', '護法', '방호', 'оберег', '护幕', '護幕',
+        ]);
+      case 'flash':
+        return _containsAny(raw, [
+          'flash', 'lampejo', 'destello', 'éclair', 'aufblitzen', 'lampo',
+          'flash', '瞬速', '섬광', 'вспышка', '闪现', '閃現',
+        ]);
+      case 'defender':
+        return _containsAny(raw, [
+          'defender', 'defensor', 'defensora', 'defensive', 'défenseur',
+          'verteidiger', 'difensore', '守備', '방어', 'защитник', '防御者',
+        ]);
+      case 'sacrifice':
+        return _containsAny(raw, [
+          'sacrifice', 'sacrificar', 'sacrifica', 'sacrifice', 'opfern',
+          'sacrificare', 'sacrificar', '生け贄', '희생', 'жертва', '牺牲', '犧牲',
+        ]);
+      case 'graveyard_return':
+        return _containsAny(raw, [
+          'graveyard', 'cemitério', 'cemiterio', 'cementerio', 'cimetière',
+          'friedhof', 'cimitero', '墓地', '무덤', 'кладбище', '墓地',
+        ]) &&
+            _containsAny(raw, [
+              'return', 'retornar', 'voltar', 'devolver', 'regresar', 'retourner',
+              'zurück', 'zuruck', 'ritorn', 'volver', '戻す', '돌아', 'вернуть',
+              '返回', '回墓',
+            ]);
+      case 'exile':
+        return _containsAny(raw, [
+          'exile', 'exilar', 'exilia', 'exiliar', 'desterrar', 'exiler',
+          'ins exil', 'ins exil', 'esiliare', '추방', '追放', 'изгнать',
+          '放逐', '放逐',
+        ]);
+      case 'destroy':
+        return _containsAny(raw, [
+          'destroy', 'destruir', 'destruye', 'détruire', 'zerstören',
+          'zerstoren', 'distruggere', 'destruír', '破壊', '파괴', 'уничтожить',
+          '摧毁', '摧毀',
+        ]);
+      case 'discard':
+        return _containsAny(raw, [
+          'discard', 'descartar', 'descarta', 'défausser', 'abwerfen',
+          'scartare', 'descartar', '捨て', '버리', 'сбросить', '弃牌', '棄牌',
+        ]);
+      case 'draw':
+        return _containsAny(raw, [
+          'draw a card', 'draw cards', 'draw ', 'comprar uma carta',
+          'compre uma carta', 'comprar cartas', 'robar una carta',
+          'robar cartas', 'piocher une carte', 'piocher des cartes',
+          'eine karte ziehen', 'pesca una carta', 'pesca carte',
+          '카드를 뽑', 'カードを引', 'взять карту', '抽一张牌', '抽一張牌',
+        ]);
+      case 'counter':
+        return _containsAny(raw, [
+          'counter target', 'counter spell', 'counter that',
+          'anular alvo', 'anule a mágica', 'anular a mágica',
+          'neutralizar a mágica', 'neutralize a mágica',
+          'contrarrestar', 'contrarresta',
+          'contrecarrer', 'neutralisieren', 'neutralisiere',
+          'neutralizzare', '打ち消す', '打消す', '무효화',
+          'контрить', 'отменить заклинание', '反击', '反擊',
+        ]);
+      case 'create_token':
+        return (_containsAny(raw, [
+              'create a ',
+              'create one ',
+              'criar uma ',
+              'criar um ',
+              'crie uma ',
+              'crear una ',
+              'crear un ',
+              'créer un ',
+              'erschaffe',
+              'crea una ',
+              'crea un ',
+              'token',
+              'ficha',
+              'ficha',
+              'jeton',
+              'spielstein',
+              'pedina',
+              'トークン',
+              '토큰',
+              'жетон',
+              '衍生物',
+            ]) &&
+            _containsAny(raw, [
+              'token', 'ficha', 'jeton', 'spielstein', 'pedina',
+              'トークン', '토큰', 'жетон', '衍生物',
+            ]));
+      case 'mill':
+        return _containsAny(raw, [
+          'mill', 'milling', 'moer cartas', 'moa cartas',
+          'moa a biblioteca', 'moler cartas', 'meule les cartes',
+          'mühle', 'macinare', 'macina carte',
+          'ライブラリーの上から', 'ライブラリーを切削',
+          '덱에서 밀', '덱을 밀', 'карты с верха библиотеки',
+          '磨掉', '磨牌',
+        ]);
+      case 'scry':
+        return _containsAny(raw, [
+          'scry', 'adivinhar', 'vidência', 'scry', 'mirar', 'espiar',
+          '占術', '점술', 'предсказание', '占卜',
+        ]);
+      case 'gain_life':
+        return _containsAny(raw, [
+          'gain life', 'gained life', 'gain 1 life', 'gain 2 life',
+          'gain 3 life', 'gain 4 life', 'gain 5 life',
+          'ganha vida', 'ganhar vida', 'ganhe vida',
+          'ganha pontos de vida', 'ganhar pontos de vida',
+          'ganhe pontos de vida', 'ganar vida', 'ganar vidas',
+          'gagner des points de vie', 'lebenspunkte erhalten',
+          'lebenspunkte gewinn', 'guadagnare punti vita',
+          'ライフを得', '생명점을 얻', 'получить жизнь',
+          'получите жизнь', '获得生命', '獲得生命',
+        ]);
+      case 'lose_life':
+        return _containsAny(raw, [
+          'lose life', 'perde vida', 'perder vida', 'perca vida',
+          'perder vidas', 'perder puntos de vida', 'perdre des points de vie',
+          'lebenspunkte verlieren', 'perdere punti vita',
+          'ライフを失', '생명점을 잃', 'потерять жизнь', '失去生命',
+        ]);
+      default:
+        return false;
+    }
+  }
+
+  static String _sortName(Map<String, Object?> card) =>
+      _repairMojibake(
+        (card['name'] ?? card['printed_name'] ?? '').toString(),
+      ).trim().toLowerCase();
+
+  static double _cardPrice(Map<String, Object?> card) {
+    final values = [
+      card['price_usd'],
+      card['price_ref_usd'],
+      card['value_usd'],
+      card['price'],
+    ];
+    for (final value in values) {
+      final parsed = double.tryParse(value?.toString() ?? '');
+      if (parsed != null && parsed.isFinite) return parsed;
+    }
+    return 0;
+  }
+
+  static String _abilityLabel(String key) =>
+      _abilityLabels[key] ?? _abilityLabels['all']!;
 
   @override
 
@@ -306,6 +787,31 @@ class _CollectionPageState extends State<CollectionPage> {
 
   }
 
+  Future<List<Map<String, Object?>>> _loadAllForAbilityFilter(
+      int baseTotal) async {
+    if (baseTotal <= 0) return <Map<String, Object?>>[];
+
+    // O filtro de habilidade é aplicado localmente sobre oracle_text/keywords.
+    // Para não perder cartas que estejam depois da primeira página, quando
+    // ele está ativo carregamos todo o conjunto já filtrado pelo banco.
+    final rows = await AppDatabase.instance.searchCollection(
+      query: _local.text.trim(),
+      orderBy: _order,
+      limit: baseTotal,
+      offset: 0,
+      rarity: _rarity,
+      setName: _setName,
+      color: _color,
+      typeQuery: _typeFilter.text,
+      favoritesOnly: _favoritesOnly,
+    );
+
+    return rows
+        .where((card) => _matchesAbility(card, _abilityFilter))
+        .map((card) => Map<String, Object?>.of(card))
+        .toList();
+  }
+
   Future<void> _reload() async {
 
     // Spinner de tela cheia SÓ na primeira carga. Nas demais a lista
@@ -336,33 +842,25 @@ class _CollectionPageState extends State<CollectionPage> {
 
       );
 
-      final rows = await AppDatabase.instance.searchCollection(
-
-        query: _local.text.trim(),
-
-        orderBy: _order,
-
-        limit: _pageSize,
-
-        offset: 0,
-
-        rarity: _rarity,
-
-        setName: _setName,
-
-        color: _color,
-
-        typeQuery: _typeFilter.text,
-
-        favoritesOnly: _favoritesOnly,
-
-      );
+      final rows = _abilityFilter == 'all'
+          ? await AppDatabase.instance.searchCollection(
+              query: _local.text.trim(),
+              orderBy: _order,
+              limit: _pageSize,
+              offset: 0,
+              rarity: _rarity,
+              setName: _setName,
+              color: _color,
+              typeQuery: _typeFilter.text,
+              favoritesOnly: _favoritesOnly,
+            )
+          : await _loadAllForAbilityFilter(total);
 
       if (mounted) setState(() {
         // Cópia mutável: db.query devolve lista somente-leitura e a
         // atualização otimista (_applyLocalQty) edita no lugar.
-        _cards = List<Map<String, Object?>>.of(rows);
-        _totalCount = total;
+        _cards = rows.map(_sanitizeDbCard).toList(growable: true);
+        _totalCount = _abilityFilter == 'all' ? total : rows.length;
       });
 
     } finally {
@@ -377,6 +875,9 @@ class _CollectionPageState extends State<CollectionPage> {
 
   /// Próxima página do scroll infinito (anexa, sem recarregar tudo).
   Future<void> _loadMore() async {
+    // Com habilidade ativa, _reload já carregou todo o conjunto para que o
+    // filtro seja exato. Não existe uma segunda paginação para aplicar depois.
+    if (_abilityFilter != 'all') return;
     if (_loading || _loadingMore || !_hasMore) return;
     setState(() => _loadingMore = true);
     try {
@@ -392,7 +893,10 @@ class _CollectionPageState extends State<CollectionPage> {
         favoritesOnly: _favoritesOnly,
       );
       if (mounted && rows.isNotEmpty) {
-        setState(() => _cards = [..._cards, ...rows]);
+        setState(() => _cards = [
+          ..._cards,
+          ...rows.map(_sanitizeDbCard),
+        ]);
       }
     } finally {
       if (mounted) setState(() => _loadingMore = false);
@@ -411,6 +915,10 @@ class _CollectionPageState extends State<CollectionPage> {
 
       _favoritesOnly = false;
 
+      _abilityFilter = 'all';
+
+      _order = 'name ASC';
+
       _typeFilter.clear();
 
     });
@@ -428,6 +936,8 @@ class _CollectionPageState extends State<CollectionPage> {
       _color != 'all' ||
 
       _favoritesOnly ||
+
+      _abilityFilter != 'all' ||
 
       _typeFilter.text.trim().isNotEmpty;
 
@@ -617,7 +1127,7 @@ class _CollectionPageState extends State<CollectionPage> {
 
       if (!mounted || req != _scryfallReq) return; // busca nova venceu
 
-      setState(() => _scryfallResults = results.take(30).toList());
+      setState(() => _scryfallResults = results.take(30).map(_sanitizeApiCard).toList(growable: true));
 
       if (results.isEmpty && !silent) {
 
@@ -991,62 +1501,35 @@ class _CollectionPageState extends State<CollectionPage> {
                 ),
 
                 if (inCollection)
-
                   PopupMenuButton<String>(
-
                     icon: const Icon(Icons.sort),
-
-                    tooltip: AppLocale.t('cl_sort'),
-
+                    tooltip: 'Ordenar',
                     onSelected: (v) {
-
                       setState(() => _order = v);
-
                       _reload();
-
                     },
-
-                    itemBuilder: (_) => [
-
-                      PopupMenuItem(
-
-                          value: 'name ASC',
-
-                          child: Text(AppLocale.t('cl_sort_name'))),
-
-                      PopupMenuItem(
-
-                          value: 'price_usd DESC',
-
-                          child: Text(AppLocale.t('cl_sort_value'))),
-
-                      PopupMenuItem(
-
-                          value: 'set_name ASC',
-
-                          child: Text(AppLocale.t('cl_sort_set'))),
-
-                      PopupMenuItem(
-
-                          value: 'quantity DESC',
-
-                          child: Text(AppLocale.t('cl_sort_qty'))),
-
-                    ],
-
+                    itemBuilder: (_) => _orderLabels.entries
+                        .map(
+                          (e) => PopupMenuItem<String>(
+                            value: e.key,
+                            child: Text(e.value),
+                          ),
+                        )
+                        .toList(),
                   ),
 
                 if (inCollection)
                   IconButton(
                     icon: const Icon(Icons.ios_share),
                     tooltip: AppLocale.t('cl_export'),
-                    onPressed: () => showModalBottomSheet(
-                      context: context,
-                      showDragHandle: true,
-                      builder: (_) => SafeArea(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
+                      onPressed: () => showModalBottomSheet(
+                        context: context,
+                        showDragHandle: true,
+                        builder: (_) => SafeArea(
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
                             ListTile(
                               leading: const Icon(Icons.backup_outlined),
                               title: const Text('Backup completo (JSON)'),
@@ -1095,6 +1578,7 @@ class _CollectionPageState extends State<CollectionPage> {
                       ),
                     ),
                   ),
+                ),
                 IconButton(
                   icon: const Icon(Icons.fullscreen),
 
@@ -1182,128 +1666,129 @@ class _CollectionPageState extends State<CollectionPage> {
 
   // ---------- aba COLEÇÃO ----------
 
-  Widget _collectionTab() {
-
+  Widget _collectionTopContent() {
     return Column(
-
-      key: const ValueKey('tab-collection'),
-
+      mainAxisSize: MainAxisSize.min,
       children: [
-
         Padding(
-
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-
           child: TextField(
-
             controller: _local,
-
             decoration: InputDecoration(
-
               hintText: AppLocale.t('cl_search_local'),
-
               prefixIcon: const Icon(Icons.search),
-
             ),
-
           ),
-
         ),
-
         Padding(
-
           padding: const EdgeInsets.symmetric(horizontal: 12),
-
           child: Row(
-
             children: [
-
-              TextButton.icon(
-
-                onPressed: () => setState(() => _showFilters = !_showFilters),
-
-                icon: Icon(
-
-                    _showFilters ? Icons.filter_list_off : Icons.filter_list,
-
-                    color:
-
-                        _hasActiveFilters ? AppTheme.gold : AppTheme.textMuted),
-
-                label: Text(
-
+              Flexible(
+                child: TextButton.icon(
+                  onPressed: () =>
+                      setState(() => _showFilters = !_showFilters),
+                  icon: Icon(
+                    _showFilters
+                        ? Icons.filter_list_off
+                        : Icons.filter_list,
+                    color: _hasActiveFilters
+                        ? AppTheme.gold
+                        : AppTheme.textMuted,
+                  ),
+                  label: Text(
                     _hasActiveFilters
-
                         ? AppLocale.t('cl_filters_on')
-
                         : AppLocale.t('cl_filters'),
-
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-
-                        color: _hasActiveFilters
-
-                            ? AppTheme.gold
-
-                            : AppTheme.textMuted)),
-
+                      color: _hasActiveFilters
+                          ? AppTheme.gold
+                          : AppTheme.textMuted,
+                    ),
+                  ),
+                ),
               ),
-
-              const Spacer(),
-
-              Text(
-
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
                   AppLocale.t('cl_n_cards')
-
                       .replaceAll('{n}', '$_totalCount'),
-
-                  style: const TextStyle(color: AppTheme.textMuted)),
-
-              IconButton(
-
-                icon: Icon(
-
-                    _collectionViewGrid ? Icons.view_list : Icons.grid_view),
-
-                tooltip: _collectionViewGrid
-
-                    ? AppLocale.t('dd_view_list')
-
-                    : AppLocale.t('dd_view_grid'),
-
-                onPressed: () =>
-
-                    setState(() => _collectionViewGrid = !_collectionViewGrid),
-
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(color: AppTheme.textMuted),
+                ),
               ),
-
+              IconButton(
+                icon: Icon(
+                  _collectionViewGrid ? Icons.view_list : Icons.grid_view,
+                ),
+                tooltip: _collectionViewGrid
+                    ? AppLocale.t('dd_view_list')
+                    : AppLocale.t('dd_view_grid'),
+                onPressed: () => setState(
+                  () => _collectionViewGrid = !_collectionViewGrid,
+                ),
+              ),
             ],
-
           ),
-
         ),
-
         if (_showFilters) _filtersPanel(),
-
-        // Reage na hora aos interruptores de Exibição (Ajustes) e à
-        // moeda. Via builder (não initState) para valer com hot reload.
-        Expanded(
-          child: ListenableBuilder(
-            listenable: Listenable.merge([
-              DisplayPrefs.showCardName,
-              DisplayPrefs.showCardSet,
-              DisplayPrefs.showCardPrice,
-              CurrencyService.instance.currency,
-            ]),
-            builder: (_, __) => _collectionViewGrid
-                ? _localGrid()
-                : _localList(),
-          ),
-        ),
-
       ],
-
     );
+  }
 
+  Widget _collectionTab() {
+    return LayoutBuilder(
+      builder: (_, cons) {
+        final cap =
+            cons.maxHeight.isFinite ? cons.maxHeight * 0.45 : 320.0;
+
+        // IMPORTANTE:
+        // Quando os filtros estão fechados, não usamos um
+        // SingleChildScrollView com altura máxima fixa. O conteúdo do topo
+        // fica com sua altura natural e a grade recebe imediatamente todo
+        // o espaço restante.
+        //
+        // Quando os filtros estão abertos, o topo pode ficar maior que a
+        // área disponível (principalmente com teclado); nesse caso ele
+        // continua rolável dentro de um teto, preservando a proteção contra
+        // overflow.
+        final top = _collectionTopContent();
+
+        return Column(
+          key: const ValueKey('tab-collection'),
+          children: [
+            if (_showFilters)
+              Flexible(
+                fit: FlexFit.loose,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: cap),
+                  child: SingleChildScrollView(
+                    child: top,
+                  ),
+                ),
+              )
+            else
+              top,
+
+            Expanded(
+              child: ListenableBuilder(
+                listenable: Listenable.merge([
+                  DisplayPrefs.showCardName,
+                  DisplayPrefs.showCardSet,
+                  DisplayPrefs.showCardPrice,
+                  CurrencyService.instance.currency,
+                ]),
+                builder: (_, __) => _collectionViewGrid
+                    ? _localGrid()
+                    : _localList(),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _localGrid() {
@@ -1322,7 +1807,10 @@ class _CollectionPageState extends State<CollectionPage> {
 
           padding: const EdgeInsets.all(24),
 
-          child: Column(
+          // Rolável: com teclado aberto a área encolhe e o vazio
+          // (ícone + texto + botão ~150px) estourava.
+          child: SingleChildScrollView(
+            child: Column(
 
             mainAxisSize: MainAxisSize.min,
 
@@ -1353,6 +1841,8 @@ class _CollectionPageState extends State<CollectionPage> {
               ),
 
             ],
+
+          ),
 
           ),
 
@@ -1434,7 +1924,10 @@ class _CollectionPageState extends State<CollectionPage> {
 
           padding: const EdgeInsets.all(24),
 
-          child: Column(
+          // Rolável: com teclado aberto a área encolhe e o vazio
+          // (ícone + texto + botão ~150px) estourava.
+          child: SingleChildScrollView(
+            child: Column(
 
             mainAxisSize: MainAxisSize.min,
 
@@ -1465,6 +1958,8 @@ class _CollectionPageState extends State<CollectionPage> {
               ),
 
             ],
+
+          ),
 
           ),
 
@@ -1733,71 +2228,103 @@ class _CollectionPageState extends State<CollectionPage> {
           const SizedBox(height: 8),
 
           Row(
-
             children: [
-
               Expanded(
-
                 child: DropdownButtonFormField<String>(
-
                   initialValue: _allSets.contains(_setName) ? _setName : 'all',
-
                   isExpanded: true,
-
                   decoration: InputDecoration(labelText: AppLocale.t('cl_set')),
-
                   items: [
-
                     DropdownMenuItem(
-
-                        value: 'all',
-
-                        child: Text(AppLocale.t('cl_all'),
-
-                            overflow: TextOverflow.ellipsis)),
-
+                      value: 'all',
+                      child: Text(
+                        AppLocale.t('cl_all'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     for (final s in _allSets)
-
                       DropdownMenuItem(
-
-                          value: s,
-
-                          child: Text(s, overflow: TextOverflow.ellipsis)),
-
+                        value: s,
+                        child: Text(s, overflow: TextOverflow.ellipsis),
+                      ),
                   ],
-
                   onChanged: (v) {
-
                     setState(() => _setName = v ?? 'all');
-
                     _reload();
-
                   },
-
                 ),
-
               ),
-
               const SizedBox(width: 8),
-
               Expanded(
-
-                child: TextField(
-
-                  controller: _typeFilter,
-
-                  decoration:
-
-                      InputDecoration(labelText: AppLocale.t('cl_type_ex')),
-
-                  onSubmitted: (_) => _reload(),
-
+                child: DropdownButtonFormField<String>(
+                  initialValue:
+                      _orderLabels.containsKey(_order) ? _order : 'name ASC',
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Ordenar por',
+                  ),
+                  items: _orderLabels.entries
+                      .map(
+                        (e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(
+                            e.value,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) {
+                    setState(() => _order = v ?? 'name ASC');
+                    _reload();
+                  },
                 ),
-
               ),
-
             ],
+          ),
 
+          const SizedBox(height: 8),
+
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _typeFilter,
+                  decoration:
+                      InputDecoration(labelText: AppLocale.t('cl_type_ex')),
+                  onSubmitted: (_) => _reload(),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _abilityLabels.containsKey(_abilityFilter)
+                      ? _abilityFilter
+                      : 'all',
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Habilidades'),
+                  items: _abilityLabels.entries
+                      .map((e) => DropdownMenuItem(
+                            value: e.key,
+                            child: Text(
+                              e.value,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) {
+                    setState(() => _abilityFilter = v ?? 'all');
+                    _reload();
+                  },
+                ),
+              ),
+            ],
           ),
 
           Row(
@@ -2030,7 +2557,11 @@ class _CollectionPageState extends State<CollectionPage> {
 
   Widget _addTab() {
 
-    return Column(
+    // Cabeçalho em scroll com teto (igual à aba coleção): busca +
+    // idioma + sugestões + erro cabem com teclado aberto.
+    return LayoutBuilder(builder: (_, cons) {
+      final cap = cons.maxHeight.isFinite ? cons.maxHeight * 0.45 : 320.0;
+      return Column(
 
       key: const ValueKey('tab-add'),
 
@@ -2038,6 +2569,12 @@ class _CollectionPageState extends State<CollectionPage> {
 
       children: [
 
+        Flexible(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: cap),
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
         Padding(
 
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
@@ -2200,12 +2737,15 @@ class _CollectionPageState extends State<CollectionPage> {
 
           ),
 
+        ],
+              ),
+            ),
+          ),
+        ),
         Expanded(child: _scryGrid()),
-
       ],
-
     );
-
+  });
   }
 
   Widget _scryGrid() {
@@ -2224,7 +2764,10 @@ class _CollectionPageState extends State<CollectionPage> {
 
           padding: const EdgeInsets.all(24),
 
-          child: Column(
+          // Rolável: com teclado aberto a área encolhe e o vazio
+          // (ícone + texto + botão ~150px) estourava.
+          child: SingleChildScrollView(
+            child: Column(
 
             mainAxisSize: MainAxisSize.min,
 
@@ -2243,6 +2786,8 @@ class _CollectionPageState extends State<CollectionPage> {
                   style: const TextStyle(color: AppTheme.textMuted)),
 
             ],
+
+          ),
 
           ),
 
