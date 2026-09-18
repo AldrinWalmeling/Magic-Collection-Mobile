@@ -1036,6 +1036,7 @@ class _PlayPageState extends State<PlayPage> with WidgetsBindingObserver {
     AppLocale.current.addListener(_onPrefsChanged);
     AppEvents.topVisible.addListener(_onPrefsChanged);
     AppEvents.activeProfile.addListener(_onProfileChanged);
+    AppEvents.authStopping.addListener(_onAuthStopping);
     LanPresence.ensureStarted();
     LanPresence.instance.onInvite = _onLanInvite;
 
@@ -1073,10 +1074,26 @@ class _PlayPageState extends State<PlayPage> with WidgetsBindingObserver {
         if (!mounted) return;
         setState(() => _fbRoomFriends = friends);
         _syncRoomPresenceSubs();
-      });
+      }, onError: (_) {});
     } catch (_) {}
   }
 
+  /// Sessão caindo: derruba escutas de amigos/presença/salas do UID
+  /// velho ANTES do signOut completar.
+  void _onAuthStopping() {
+    _fbRoomFrSub?.cancel();
+    _fbRoomFrSub = null;
+    for (final s in _fbRoomPresSubs.values) {
+      s.cancel();
+    }
+    _fbRoomPresSubs.clear();
+    for (final s in _sessions.values) {
+      s.roomSub?.cancel();
+      s.actionSub?.cancel();
+      s.roomSub = null;
+      s.actionSub = null;
+    }
+  }
   /// (Re)assina os convites de sala: troca de UID, volta do 2º plano
   /// (o socket do Firebase pode cochilar) ou toque no atualizar.
   /// Recriar o stream força um `onValue` imediato — o convite aparece
@@ -1102,7 +1119,7 @@ class _PlayPageState extends State<PlayPage> with WidgetsBindingObserver {
       _fbRoomPresSubs[uid] = _friendsApi.watchPresence(uid).listen((p) {
         if (!mounted) return;
         setState(() => _fbRoomPresence[uid] = p);
-      });
+      }, onError: (_) {});
     }
   }
 
@@ -1165,6 +1182,7 @@ class _PlayPageState extends State<PlayPage> with WidgetsBindingObserver {
     AppLocale.current.removeListener(_onPrefsChanged);
     AppEvents.topVisible.removeListener(_onPrefsChanged);
     AppEvents.activeProfile.removeListener(_onProfileChanged);
+    AppEvents.authStopping.removeListener(_onAuthStopping);
 
     if (LanPresence.instance.onInvite == _onLanInvite) {
       LanPresence.instance.onInvite = null;

@@ -150,7 +150,9 @@ class OnlineMatch {
   Stream<DatabaseEvent> get rawEventStream => _rawEventController.stream;
 
   String? get roomId => _roomId;
-  String? get myUid => _myUid ?? _auth.currentUser?.uid;
+  // UID vivo (não cacheado): após logout + login em outra conta,
+  // o cache antigo vazaria a identidade anterior para as salas.
+  String? get myUid => _auth.currentUser?.uid ?? _myUid;
   bool get isInRoom => _roomId != null;
 
   DatabaseReference? get roomRef {
@@ -160,6 +162,11 @@ class OnlineMatch {
   }
 
   /// Garante uma identidade estável por instalação/usuário Firebase.
+  /// Single-flight como OnlineFriends.myUid: chamadas concorrentes
+  /// compartilham a mesma criação (sem enxame de UIDs).
+  static final Map<FirebaseAuth, Future<User>> _authInflight = {};
+
+  /// Garante uma identidade estável por instalação/usuário Firebase.
   Future<User> authenticate() async {
     final current = _auth.currentUser;
     if (current != null) {
@@ -167,11 +174,20 @@ class OnlineMatch {
       return current;
     }
 
-    final credential = await _auth.signInAnonymously();
-    final user = credential.user;
-    if (user == null) {
-      throw StateError('Não foi possível criar a identidade online.');
-    }
+    final user = await _authInflight.putIfAbsent(_auth, () async {
+      try {
+        final again = _auth.currentUser;
+        if (again != null) return again;
+        final credential = await _auth.signInAnonymously();
+        final fresh = credential.user;
+        if (fresh == null) {
+          throw StateError('Não foi possível criar a identidade online.');
+        }
+        return fresh;
+      } finally {
+        _authInflight.remove(_auth);
+      }
+    });
     _myUid = user.uid;
     return user;
   }
@@ -454,8 +470,10 @@ class OnlineMatch {
         if (deleteIfHost && info.hostId == uid) {
           await room.remove();
         } else {
-          await room.child('players/$uid').remove();
+          // updatedAt ANTES de remover o próprio nó: depois da saída
+          // já não somos membro e a rule negaria o timestamp.
           await room.update({'updatedAt': ServerValue.timestamp});
+          await room.child('players/$uid').remove();
         }
       }
     } finally {
@@ -520,7 +538,9 @@ class OnlineMatch {
           _rawEventController.add(event);
         } catch (_) {}
       }
-    });
+      // Troca de UID no meio da escuta nega a leitura: engole para
+      // não derrubar o app; leave/dispose recria ao voltar.
+    }, onError: (_) {});
 
     _actionSubscription = room.child('actions').onChildAdded.listen((event) {
       if (_actionController.isClosed) return;
@@ -530,7 +550,7 @@ class OnlineMatch {
           raw.map((key, value) => MapEntry(key.toString(), value)));
       action['actionId'] = event.snapshot.key;
       _actionController.add(action);
-    });
+    }, onError: (_) {});
   }
 
   Future<void> _stopRoomListener() async {

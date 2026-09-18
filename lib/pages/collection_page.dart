@@ -18,6 +18,7 @@ import '../services/currency_service.dart';
 import '../services/display_prefs.dart';
 import '../services/rarity_repair_service.dart';
 import '../widgets/quantity_editor.dart';
+import '../widgets/deck_view.dart';
 
 import '../services/scryfall_service.dart';
 
@@ -67,6 +68,9 @@ class _CollectionPageState extends State<CollectionPage> {
   // scroll infinito busca o restante. _totalCount = total com o filtro.
   static const _pageSize = 200;
   int _totalCount = 0;
+
+  /// Cópias totais (soma de quantity) com os mesmos filtros.
+  int _totalCopies = 0;
   bool _loadingMore = false;
   final _scrollCtrl = ScrollController();
 
@@ -88,6 +92,7 @@ class _CollectionPageState extends State<CollectionPage> {
   bool _showFilters = false;
 
   bool _collectionViewGrid = true; // grade (padrão) ou lista
+  int _gridCols = 2;
 
   // ---- busca Scryfall ----
 
@@ -826,7 +831,7 @@ class _CollectionPageState extends State<CollectionPage> {
 
     try {
 
-      final total = await AppDatabase.instance.countCollection(
+      final totals = await AppDatabase.instance.collectionTotals(
 
         query: _local.text.trim(),
 
@@ -854,13 +859,21 @@ class _CollectionPageState extends State<CollectionPage> {
               typeQuery: _typeFilter.text,
               favoritesOnly: _favoritesOnly,
             )
-          : await _loadAllForAbilityFilter(total);
+          : await _loadAllForAbilityFilter(totals.unique);
 
       if (mounted) setState(() {
         // Cópia mutável: db.query devolve lista somente-leitura e a
         // atualização otimista (_applyLocalQty) edita no lugar.
         _cards = rows.map(_sanitizeDbCard).toList(growable: true);
-        _totalCount = _abilityFilter == 'all' ? total : rows.length;
+        if (_abilityFilter == 'all') {
+          _totalCount = totals.unique;
+          _totalCopies = totals.copies;
+        } else {
+          // Filtro de habilidade é client-side sobre o conjunto todo.
+          _totalCount = rows.length;
+          _totalCopies = rows.fold<int>(
+              0, (s, c) => s + (((c['quantity'] as num?)?.toInt() ?? 0)));
+        }
       });
 
     } finally {
@@ -962,9 +975,17 @@ class _CollectionPageState extends State<CollectionPage> {
   void _applyLocalQty(int id, int qty) {
     if (!mounted) return;
     setState(() {
+      var old = 0;
+      for (final c in _cards) {
+        if ((c['id'] as num?)?.toInt() == id) {
+          old = (c['quantity'] as num?)?.toInt() ?? 0;
+          break;
+        }
+      }
       if (qty <= 0) {
         _cards.removeWhere((c) => (c['id'] as num?)?.toInt() == id);
         if (_totalCount > 0) _totalCount--;
+        _totalCopies = (_totalCopies - old).clamp(0, 1 << 31);
         return;
       }
       for (var i = 0; i < _cards.length; i++) {
@@ -973,6 +994,7 @@ class _CollectionPageState extends State<CollectionPage> {
           break;
         }
       }
+      _totalCopies = (_totalCopies + qty - old).clamp(0, 1 << 31);
       if (_order.startsWith('quantity')) {
         final desc = !_order.toUpperCase().contains('ASC');
         _cards.sort((a, b) {
@@ -1622,7 +1644,7 @@ class _CollectionPageState extends State<CollectionPage> {
 
                       label: Text(AppLocale.t('cl_tab_count')
 
-                          .replaceAll('{n}', '${_cards.length}'))),
+                          .replaceAll('{n}', '$_totalCount'))),
 
                   ButtonSegment(
 
@@ -1712,13 +1734,21 @@ class _CollectionPageState extends State<CollectionPage> {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  AppLocale.t('cl_n_cards')
-                      .replaceAll('{n}', '$_totalCount'),
+                  AppLocale.t('dd_count')
+                      .replaceAll('{u}', '$_totalCount')
+                      .replaceAll('{t}', '$_totalCopies'),
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.right,
                   style: const TextStyle(color: AppTheme.textMuted),
                 ),
               ),
+              const Spacer(),
+              if (_collectionViewGrid)
+                GridColumnsToggle(
+                  columns: _gridCols,
+                  onChanged: (v) =>
+                      setState(() => _gridCols = v),
+                ),
               IconButton(
                 icon: Icon(
                   _collectionViewGrid ? Icons.view_list : Icons.grid_view,
@@ -1861,7 +1891,8 @@ class _CollectionPageState extends State<CollectionPage> {
     final showInfo =
         DisplayPrefs.showCardSet.value || DisplayPrefs.showCardPrice.value;
     final cellW =
-        (MediaQuery.of(context).size.width - 24 - 12) / 2;
+        (MediaQuery.of(context).size.width - 24 - 12 * (_gridCols - 1)) /
+            _gridCols;
     final infoH = 12.0 +
         34.0 +
         (showName ? 23.0 : 0.0) +
@@ -1877,7 +1908,7 @@ class _CollectionPageState extends State<CollectionPage> {
 
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
 
-        crossAxisCount: 2,
+        crossAxisCount: _gridCols,
 
         // Célula justa: arte 63:88 inteira + infos, sem sobra vazia
         // embaixo e sem estouro (0.55 estourava, 0.52 dava folga).

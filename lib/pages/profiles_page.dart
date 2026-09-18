@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/app_events.dart';
+import '../services/account_sync.dart';
+import '../services/auth_service.dart';
 import '../services/online_friends.dart';
 import '../services/app_locale.dart';
 import '../services/lan_presence.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../data/app_database.dart';
@@ -48,6 +48,8 @@ class _ProfilesPageState extends State<ProfilesPage> {
   StreamSubscription? _fbReqSub;
   StreamSubscription? _fbFrSub;
   final Map<String, StreamSubscription> _fbPresSubs = {};
+  StreamSubscription? _authSub;
+  bool _authFirst = true;
 
   @override
   void initState() {
@@ -59,7 +61,46 @@ class _ProfilesPageState extends State<ProfilesPage> {
     AppEvents.topVisible.addListener(_onBars);
     AppEvents.navVisible.addListener(_onBars);
     AppEvents.activeProfile.addListener(_onProfileChanged);
+    AppEvents.authStopping.addListener(_onAuthStopping);
     _initOnlineFriends();
+    // Troca de conta: sem usuário, derruba as escutas do UID velho
+    // (senão dão permission-denied e crash); com usuário, religa.
+    _authSub = AuthService.authChanges().listen((u) {
+      if (_authFirst) {
+        _authFirst = false;
+        return;
+      }
+      if (!mounted) return;
+      if (u == null) {
+        _cancelOnlineSubs();
+        setState(() {
+          _fbUid = '';
+          _fbCode = '';
+          _fbRequests = [];
+          _fbFriends = [];
+          _fbPresence.clear();
+        });
+      } else {
+        _initOnlineFriends();
+      }
+    });
+  }
+
+  /// Derruba todas as escutas RTDB (chamado no dispose, na troca de
+  /// conta e ANTES do signOut via authStopping).
+  void _cancelOnlineSubs() {
+    _fbReqSub?.cancel();
+    _fbFrSub?.cancel();
+    _fbReqSub = null;
+    _fbFrSub = null;
+    for (final s in _fbPresSubs.values) {
+      s.cancel();
+    }
+    _fbPresSubs.clear();
+  }
+
+  void _onAuthStopping() {
+    _cancelOnlineSubs();
   }
 
   @override
@@ -68,12 +109,9 @@ class _ProfilesPageState extends State<ProfilesPage> {
     AppEvents.topVisible.removeListener(_onBars);
     AppEvents.navVisible.removeListener(_onBars);
     AppEvents.activeProfile.removeListener(_onProfileChanged);
-    _fbReqSub?.cancel();
-    _fbFrSub?.cancel();
-    for (final s in _fbPresSubs.values) {
-      s.cancel();
-    }
-    _fbPresSubs.clear();
+    AppEvents.authStopping.removeListener(_onAuthStopping);
+    _authSub?.cancel();
+    _cancelOnlineSubs();
     _friendCodeCtrl.dispose();
     super.dispose();
   }
@@ -116,21 +154,32 @@ class _ProfilesPageState extends State<ProfilesPage> {
     }
     _fbPresSubs.clear();
     try {
+      // Nome local pendente: não cria identidade placeholder; o
+      // evento de perfil recarrega após a escolha.
+      if (await AppDatabase.instance.needsProfileSetup()) return;
       final uid = await _friendsApi.myUid;
       final ref = await _currentProfileRef();
       if (!mounted || ref == null) return;
       final code = await _friendsApi.ensureFriendCode(
-        profileId: ref['id']!,
+        // Slot: 'main' p/ permanente (entre aparelhos), linha local
+        // p/ convidado (reativável no aparelho, sem credencial).
+        profileId: OnlineFriends.slotFor(
+          isPermanent: AuthService.isPermanent,
+          localRowId: ref['id']!,
+        ),
         name: ref['name']!,
       );
       if (!mounted) return;
       setState(() {
         _fbUid = uid;
         _fbCode = code;
-        _fbProfileId = ref['id']!;
+        _fbProfileId = OnlineFriends.slotFor(
+          isPermanent: AuthService.isPermanent,
+          localRowId: ref['id']!,
+        );
         _fbProfileName = ref['name']!;
       });
-      // Códigos de todos os perfis (tiles mostram o de cada um).
+      // Mapa de códigos da conta (tiles mostram o da conta ativa).
       _friendsApi.friendCodesOnce().then((codes) {
         if (!mounted) return;
         setState(() => _fbCodes = codes);
@@ -142,12 +191,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
         if (!mounted) return;
         // Mostra pedidos para qualquer perfil deste UID (marca o alvo).
         setState(() => _fbRequests = reqs);
-      });
+      }, onError: (_) {});
       _fbFrSub = _friendsApi.watchFriends(uid).listen((friends) {
         if (!mounted) return;
         setState(() => _fbFriends = friends);
         _syncPresenceSubs();
-      });
+      }, onError: (_) {});
     } catch (_) {}
   }
 
@@ -188,7 +237,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
       _fbPresSubs[uid] = _friendsApi.watchPresence(uid).listen((p) {
         if (!mounted) return;
         setState(() => _fbPresence[uid] = p);
-      });
+      }, onError: (_) {});
     }
   }
 
@@ -279,32 +328,6 @@ class _ProfilesPageState extends State<ProfilesPage> {
     }
   }
 
-  String _safeFileName(String name, String id) {
-    final clean = name.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-    final base = clean.isEmpty ? 'perfil' : clean;
-    return '${base}_$id.db';
-  }
-
-  Future<void> _create() async {
-    final name = await _askName(AppLocale.t('prof_new'));
-    if (name == null || name.trim().isEmpty) return;
-    final dir = await getApplicationDocumentsDirectory();
-    final id = const Uuid().v4().substring(0, 8);
-    final path = p.join(dir.path, _safeFileName(name, id));
-    // Só no registro global: o arquivo nasce na primeira ativação.
-    final values = <String, Object?>{
-      'id': id,
-      'name': name.trim(),
-      'database_path': path,
-      'code': AppDatabase.newInviteCode(),
-      'last_opened_at': DateTime.now().toIso8601String(),
-    };
-    await AppDatabase.instance.registryUpsert(values);
-    // Perfil recém-criado já nasce ativo: senão o app continuava
-    // mostrando o antigo ("Convidado") até o usuário tocar no novo.
-    await _activate(values);
-  }
-
   Future<String?> _askName(String title, {String initial = ''}) async {
     final c = TextEditingController(text: initial);
     final result = await showDialog<String>(
@@ -328,6 +351,14 @@ class _ProfilesPageState extends State<ProfilesPage> {
   }
 
   Future<void> _rename(Map<String, Object?> pr) async {
+    final rowUid = (pr['firebase_uid'] ?? '').toString();
+    final cur = AuthService.current;
+    if (rowUid.isNotEmpty && (cur == null || rowUid != cur.uid)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocale.t('acc_switch_required'))));
+      return;
+    }
     final name = await _askName(AppLocale.t('prof_rename'),
         initial: (pr['name'] ?? '').toString());
     if (name == null || name.trim().isEmpty) return;
@@ -348,36 +379,55 @@ class _ProfilesPageState extends State<ProfilesPage> {
     await _reload();
   }
 
-  Future<void> _activate(Map<String, Object?> profile) async {
-    final prefs = await SharedPreferences.getInstance();
-    final path = (profile['database_path'] ?? '').toString();
-    if (path.isEmpty) return;
-    await prefs.setString('active_db_path', path);
-    await AppDatabase.instance.openDb(path);
-    // Cada perfil abre seu próprio banco (cartas/decks/coleção só dele).
-    // A lista continua global via registro — ninguém some.
-    final values = {
-      'id': profile['id'],
-      'name': profile['name'],
-      'database_path': path,
-      'code': profile['code'] ?? AppDatabase.newInviteCode(),
-      'last_opened_at': DateTime.now().toIso8601String(),
-    };
-    try {
-      final existing = await AppDatabase.instance.db.query('profiles',
-          where: 'database_path = ?', whereArgs: [path], limit: 1);
-      if (existing.isNotEmpty) {
-        await AppDatabase.instance.db.update('profiles', values,
-            where: 'id = ?', whereArgs: [existing.first['id']]);
-      } else {
-        await AppDatabase.instance.db.insert('profiles', values);
+  /// Uma linha por CONTA (ver gateOpen): nome, tipo e UID curto.
+  /// Legado (sem uid) mostra tipo Local e pode ser adotado.
+  String _accountLabel(Map<String, Object?> pr) {
+    final rowUid = (pr['firebase_uid'] ?? '').toString();
+    if (rowUid.isEmpty) return AppLocale.t('acc_type_local');
+    var kind = (pr['auth_type'] ?? '').toString();
+    if (kind.isEmpty) {
+      final cur = AuthService.current;
+      if (cur != null && rowUid == cur.uid) {
+        kind = AuthService.accountKind;
       }
-    } catch (_) {}
+    }
+    final type = switch (kind) {
+      'google' => AppLocale.t('acc_type_google'),
+      'email' => AppLocale.t('acc_type_email'),
+      'guest' => AppLocale.t('acc_type_guest'),
+      _ => AppLocale.t('acc_type_unknown'),
+    };
+    final short =
+        rowUid.length > 6 ? '${rowUid.substring(0, 6)}…' : rowUid;
+    return '$type • UID $short';
+  }
+
+  Future<void> _activate(Map<String, Object?> profile) async {
+    final cur = AuthService.current;
+    final rowUid = (profile['firebase_uid'] ?? '').toString();
+    final gate = AppDatabase.gateOpen(
+      rowUid: rowUid,
+      currentUid: cur?.uid,
+      signedIn: cur != null,
+    );
+    if (gate == 'need_login') {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocale.t('acc_switch_required'))));
+      return;
+    }
+    if (gate == 'legacy') {
+      await _adoptLegacy(profile);
+      return;
+    }
+    // Conta própria: troca transacional (arquivo + contexto).
     try {
-      await AppDatabase.instance.registryUpsert(values);
+      await AppDatabase.instance.switchToAccount(
+        uid: cur!.uid,
+        kind: AuthService.accountKind,
+        displayName: (profile['name'] ?? '').toString(),
+      );
     } catch (_) {}
-    // Aplica na hora, sem restart: atualiza o nome no discovery e
-    // manda todas as telas recarregarem do banco novo.
     try {
       await LanPresence.ensureStarted();
     } catch (_) {}
@@ -388,7 +438,52 @@ class _ProfilesPageState extends State<ProfilesPage> {
               .replaceAll('{n}', '${profile['name']}'))));
     }
     await _reload();
-    // Código de amigo é por perfil: recarrega para o novo ativo.
+    _initOnlineFriends();
+  }
+
+  /// Adota arquivo legado na conta atual (explícito + confirmado).
+  /// Recusado se a conta já tem arquivo (sem fusão silenciosa).
+  Future<void> _adoptLegacy(Map<String, Object?> profile) async {
+    final cur = AuthService.current;
+    if (cur == null || !mounted) return;
+    final name = (profile['name'] ?? '?').toString();
+    final id = (profile['id'] ?? '').toString();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppLocale.t('acc_adopt_title')),
+        content: Text(AppLocale.t('acc_adopt_body')
+            .replaceAll('{n}', name)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(AppLocale.t('common_cancel'))),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(AppLocale.t('acc_adopt_confirm'))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await AppDatabase.instance.openProfileRow(profile,
+          bindUid: cur.uid);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocale.t('acc_adopt_blocked'))));
+      return;
+    }
+    try {
+      await LanPresence.ensureStarted();
+    } catch (_) {}
+    AppEvents.notifyProfileChanged();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocale.t('prof_activated')
+              .replaceAll('{n}', name))));
+    }
+    await _reload();
     _initOnlineFriends();
   }
 
@@ -399,6 +494,15 @@ class _ProfilesPageState extends State<ProfilesPage> {
     final name = (pr['name'] ?? '?').toString();
     final id = (pr['id'] ?? '').toString();
     final path = (pr['database_path'] ?? '').toString();
+    final rowUid = (pr['firebase_uid'] ?? '').toString();
+    final cur = AuthService.current;
+    // Só dono (ou legado sem dono): nunca apaga conta de outro UID.
+    if (rowUid.isNotEmpty && (cur == null || rowUid != cur.uid)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocale.t('acc_switch_required'))));
+      return;
+    }
     final mainPath = await AppDatabase.instance.mainDbPath();
     if (!mounted) return;
     if (path == mainPath) {
@@ -423,11 +527,6 @@ class _ProfilesPageState extends State<ProfilesPage> {
     );
     if (ok != true) return;
     final wasActive = path == _activePath;
-    if (wasActive) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('active_db_path', mainPath);
-      await AppDatabase.instance.openDb(mainPath);
-    }
     try {
       final f = File(path);
       if (await f.exists()) await f.delete();
@@ -439,6 +538,20 @@ class _ProfilesPageState extends State<ProfilesPage> {
       await AppDatabase.instance.db
           .delete('profiles', where: 'id = ?', whereArgs: [id]);
     } catch (_) {}
+    if (wasActive && cur != null) {
+      // Reabre o arquivo da conta (vazio) e tenta restaurar do backup.
+      // Cache local apagado; dados da conta voltam do servidor.
+      try {
+        await AppDatabase.instance.switchToAccount(
+          uid: cur.uid,
+          kind: AuthService.accountKind,
+          displayName: (pr['name'] ?? '').toString(),
+        );
+      } catch (_) {}
+      try {
+        await AccountSync.syncNow();
+      } catch (_) {}
+    }
     // Sem restart: as telas recarregam do banco atual na hora.
     AppEvents.notifyProfileChanged();
     if (mounted) {
@@ -529,12 +642,8 @@ class _ProfilesPageState extends State<ProfilesPage> {
           : null,
       // Sempre visível e CENTRALIZADO: no foco total o botão de voltar
       // as barras fica à direita, então não há sobreposição.
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: FloatingActionButton(
-        heroTag: null,
-        onPressed: _create,
-        child: const Icon(Icons.add),
-      ),
+      // Sem FAB: contas vêm do login/vínculo, não de criação local.
+      // Arquivos legados aparecem na lista e podem ser adotados.
       body: SafeArea(
         top: !AppEvents.topVisible.value,
         bottom: false,
@@ -546,12 +655,6 @@ class _ProfilesPageState extends State<ProfilesPage> {
                 Text(AppLocale.t('prof_my'),
                     style: const TextStyle(
                         fontWeight: FontWeight.bold, fontSize: 16)),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _create,
-                  icon: const Icon(Icons.person_add, size: 16),
-                  label: Text(AppLocale.t('prof_new_btn')),
-                ),
               ],
             ),
             const SizedBox(height: 8),
@@ -674,7 +777,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
               children: [
                 Expanded(
                   child: Text(
-                      '${AppLocale.t('fr_code')}: ${_fbCode.isEmpty ? '…' : _fbCode}',
+                      "${AppLocale.t('fr_code')}: ${_fbCode.isEmpty ? '…' : '#$_fbCode'}",
                       style: const TextStyle(
                           color: AppTheme.gold,
                           fontWeight: FontWeight.bold,
@@ -689,10 +792,10 @@ class _ProfilesPageState extends State<ProfilesPage> {
                   onPressed: _fbCode.isEmpty
                       ? null
                       : () {
-                          Clipboard.setData(ClipboardData(text: _fbCode));
+                          Clipboard.setData(ClipboardData(text: '#$_fbCode'));
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                               content: Text(AppLocale.t('prof_copied')
-                                  .replaceAll('{c}', _fbCode))));
+                                  .replaceAll('{c}', '#$_fbCode'))));
                         },
                 ),
               ],
@@ -825,9 +928,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
 
   Widget _profileTile(Map<String, Object?> pr) {
     final isActive = pr['database_path'] == _activePath;
-    // Código ÚNICO do perfil (online). Sem ele (offline), não mostra
-    // nada — o legado local foi aposentado da UI.
-    final code = _fbCodes[(pr['id'] ?? '').toString()] ?? '';
+    // Cada linha tem seu código (slot próprio: linha local p/
+    // convidado, 'main' p/ permanente). Fallback do ativo.
+    var code = _fbCodes[(pr['id'] ?? '').toString()] ?? '';
+    if (code.isEmpty && isActive) {
+      code = _fbCodes[OnlineFriends.accountProfileId] ?? '';
+    }
     return Card(
       child: ListTile(
         leading: CircleAvatar(
@@ -846,13 +952,18 @@ class _ProfilesPageState extends State<ProfilesPage> {
             Text(
                 isActive ? AppLocale.t('prof_active') : AppLocale.t('prof_tap'),
                 style: const TextStyle(color: AppTheme.textMuted)),
+            Text(_accountLabel(pr),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: AppTheme.textMuted, fontSize: 11)),
             if (code.isNotEmpty)
               InkWell(
                 onTap: () => _copyCode(code),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('${AppLocale.t('prof_code')}: $code',
+                    Text('${AppLocale.t('prof_code')}: #$code',
                         style: const TextStyle(
                             color: AppTheme.gold, fontWeight: FontWeight.bold)),
                     const SizedBox(width: 4),

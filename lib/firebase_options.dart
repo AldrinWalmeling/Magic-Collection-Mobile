@@ -46,6 +46,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '503876111267',
     projectId: 'magic-collection-project',
     authDomain: 'magic-collection-project.firebaseapp.com',
+    databaseURL: 'https://magic-collection-project-default-rtdb.firebaseio.com',
     storageBucket: 'magic-collection-project.firebasestorage.app',
   );
 
@@ -54,24 +55,27 @@ class DefaultFirebaseOptions {
     appId: '1:503876111267:android:ff60d745e2ff87432fa816',
     messagingSenderId: '503876111267',
     projectId: 'magic-collection-project',
+    databaseURL: 'https://magic-collection-project-default-rtdb.firebaseio.com',
     storageBucket: 'magic-collection-project.firebasestorage.app',
   );
-
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyBYKjG1Sj9mU1Rk2j_WDIUen-XoY-GOnEA',
     appId: '1:503876111267:ios:94398cc07cd819052fa816',
     messagingSenderId: '503876111267',
     projectId: 'magic-collection-project',
+    databaseURL: 'https://magic-collection-project-default-rtdb.firebaseio.com',
     storageBucket: 'magic-collection-project.firebasestorage.app',
+    iosClientId: '503876111267-n6i4sq449lo4a6e9jhph3lh8uiqehtq1.apps.googleusercontent.com',
     iosBundleId: 'com.magic.collection.magicCollection',
   );
-
   static const FirebaseOptions macos = FirebaseOptions(
     apiKey: 'AIzaSyBYKjG1Sj9mU1Rk2j_WDIUen-XoY-GOnEA',
     appId: '1:503876111267:ios:94398cc07cd819052fa816',
     messagingSenderId: '503876111267',
     projectId: 'magic-collection-project',
+    databaseURL: 'https://magic-collection-project-default-rtdb.firebaseio.com',
     storageBucket: 'magic-collection-project.firebasestorage.app',
+    iosClientId: '503876111267-n6i4sq449lo4a6e9jhph3lh8uiqehtq1.apps.googleusercontent.com',
     iosBundleId: 'com.magic.collection.magicCollection',
   );
 
@@ -81,6 +85,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '503876111267',
     projectId: 'magic-collection-project',
     authDomain: 'magic-collection-project.firebaseapp.com',
+    databaseURL: 'https://magic-collection-project-default-rtdb.firebaseio.com',
     storageBucket: 'magic-collection-project.firebasestorage.app',
   );
 }

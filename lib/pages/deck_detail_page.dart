@@ -12,12 +12,16 @@ import '../services/currency_service.dart';
 import '../services/deck_availability.dart';
 import '../services/deck_list_format.dart';
 import '../services/deck_stats.dart';
+import '../services/card_types.dart';
 import '../services/export_service.dart';
 import '../services/scryfall_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/deck_view.dart';
+import '../widgets/mana_curve_chart.dart';
 import '../widgets/mtg_symbols.dart';
 import 'card_detail_sheet.dart';
+import 'community_publish.dart';
 
 // Editor do deck — espelha pages/decks_page.py + services/decks_database.py.
 // Adicionar tem DOIS modos (alternador):
@@ -71,15 +75,13 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   // Validação do formato (sininho) + modo de exibição.
   List<String> _problems = [];
   bool _deckViewGrid = false;
+  int _gridCols = 2;
   // Disponibilidade Deck x Collection + estatísticas (Fase A).
   // Recalculados a cada _reload: o estado flui dos dados, sem timers.
   DeckAvailability _avail = DeckAvailability.empty;
   DeckStats _deckStats = DeckStats.empty;
-  // Rolagem do topo: ao recolher (cabeçalho/stats), volta ao início —
-  // senão o offset antigo mostra área vazia/cortada no lugar.
-  final _topScroll = ScrollController();
-  // Scroll próprio das cartas (grade e lista compartilham): permite
-  // realinhar a fileira após mudar a altura do topo.
+  // Rolagem única da página (padrão do Social): cabeçalho, stats,
+  // filtros e cartas rolam juntos — sem topo fixo nem snap.
   final _cardsScroll = ScrollController();
   // Cabeçalho recolhível (persistido): menos poluição, mais grade.
   static const _headerKey = 'deck_header_expanded';
@@ -101,37 +103,10 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
 
   Future<void> _toggleHeader() async {
     setState(() => _headerExpanded = !_headerExpanded);
-    // Conteúdo encolheu: zera o scroll do topo na hora.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_topScroll.hasClients) _topScroll.jumpTo(0);
-    });
-    _snapCardsToRow();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_headerKey, _headerExpanded);
     } catch (_) {}
-  }
-
-  /// Realinha a grade na fileira mais próxima após mudar a altura do
-  /// topo (recolher/expandir): nenhuma carta fica cortada no meio por
-  /// causa do offset antigo. Só grade (fileiras exatas); lista mantém.
-  /// Sem timers: um post-frame do próprio Flutter, salto instantâneo.
-  void _snapCardsToRow() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_deckViewGrid || !_cardsScroll.hasClients) return;
-      // Grade 2 colunas, padding 12+12, espaçamento 12, aspecto 0.69
-      // (espelhar _deckGridTile se esses números mudarem).
-      final w = MediaQuery.of(context).size.width;
-      final itemW = (w - 24 - 12) / 2;
-      if (itemW <= 0) return;
-      final rowH = itemW / 0.69 + 12;
-      final pos = _cardsScroll.position;
-      final target =
-          ((pos.pixels / rowH).round() * rowH).clamp(0.0, pos.maxScrollExtent);
-      if ((target - pos.pixels).abs() > 1) {
-        _cardsScroll.jumpTo(target);
-      }
-    });
   }
 
   /// Regras por formato (espelha services/deck_formats.py).
@@ -953,7 +928,6 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   void dispose() {
     _query.dispose();
     _typeFilter.dispose();
-    _topScroll.dispose();
     _cardsScroll.dispose();
     _debounce?.cancel();
     AppLocale.current.removeListener(_onLocale);
@@ -1036,17 +1010,9 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
   }
 
   static bool _isBasicLand(Map<String, Object?> c) {
-    final tl = ((c['type_line'] ?? '') as String).toLowerCase();
-    if (tl.contains('basic land')) return true;
-    const basics = {
-      'plains',
-      'island',
-      'swamp',
-      'mountain',
-      'forest',
-      'wastes'
-    };
-    return basics.contains(((c['name'] ?? '') as String).toLowerCase().trim());
+    // Multilíngue via CardTypes (type_line impresso pode ser PT/ES).
+    return CardTypes.isBasicLand(
+        c['type_line'], (c['name'] ?? '').toString());
   }
 
   static List<String> _stringList(Object? raw) {
@@ -1107,8 +1073,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
           probs.add(AppLocale.t('dd_v_commander_nf'));
         } else {
           commander = rows.first;
-          final tl = ((commander['type_line'] ?? '') as String).toLowerCase();
-          if (!tl.contains('legendary')) {
+          if (!CardTypes.isLegendary(commander['type_line'])) {
             probs.add(AppLocale.t('dd_v_commander_leg')
                 .replaceAll('{n}', '${commander['name']}'));
           }
@@ -1763,12 +1728,6 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
 
   void _toggleDeckFilters() {
     setState(() => _showFilters = !_showFilters);
-    if (!_showFilters) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_topScroll.hasClients) return;
-        _topScroll.jumpTo(0);
-      });
-    }
   }
 
   void _switchMode(String mode) {
@@ -1934,24 +1893,23 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                         child: Text(AppLocale.t('dd_export_json'))),
                   ],
                 ),
+                IconButton(
+                  icon: const Icon(Icons.cloud_upload_outlined),
+                  tooltip: AppLocale.t('com_publish'),
+                  onPressed: _items.isEmpty
+                      ? null
+                      : () => CommunityPublish.show(
+                          context, widget.deckId),
+                ),
               ],
             )
           : null,
       body: SafeArea(
         top: !AppEvents.topVisible.value,
         bottom: false,
-        child: LayoutBuilder(
-          builder: (_, cons) {
-            final topCap =
-                cons.maxHeight.isFinite ? cons.maxHeight * 0.45 : 420.0;
-
-            // O topo só usa o scroll limitado quando há conteúdo expandido.
-            // Com o cabeçalho e as estatísticas recolhidos, ele volta à
-            // altura natural. Assim a grade não fica presa a um container
-            // de 45% da tela e ocupa todo o espaço liberado.
-            final topContent = Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+        child: ListView(
+          controller: _cardsScroll,
+          children: [
                 _headerCard(),
                 if (_importing)
                   Padding(
@@ -2030,6 +1988,15 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                           ),
                         ),
                       ),
+                      if (_deckViewGrid) ...[
+                        GridColumnsToggle(
+                          columns: _gridCols,
+                          onChanged: (v) {
+                            setState(() => _gridCols = v);
+                          },
+                        ),
+                        const SizedBox(width: 4),
+                      ],
                       IconButton(
                         icon: Icon(
                           _deckViewGrid
@@ -2046,34 +2013,12 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                         ),
                         onPressed: () {
                           setState(() => _deckViewGrid = !_deckViewGrid);
-                          _snapCardsToRow();
                         },
                       ),
                     ],
                   ),
                 ),
                 if (_showFilters) _deckFiltersPanel(),
-              ],
-            );
-
-            final topNeedsScroll =
-                _headerExpanded || _statsExpanded || _importing || _showFilters;
-
-            return Column(
-              children: [
-                if (topNeedsScroll)
-                  Flexible(
-                    fit: FlexFit.loose,
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: topCap),
-                      child: SingleChildScrollView(
-                        controller: _topScroll,
-                        child: topContent,
-                      ),
-                    ),
-                  )
-                else
-                  topContent,
 
             // ---- alternador da fonte de adição ----
             Padding(
@@ -2163,7 +2108,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
               ),
             ),
             if (isCollection && _localResults.isNotEmpty)
-              Flexible(fit: FlexFit.loose, child: _localAddList()),
+              SizedBox(height: 240, child: _localAddList()),
             if (!isCollection && _suggestions.isNotEmpty)
               SizedBox(
                 height: 40,
@@ -2205,148 +2150,254 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                     style: const TextStyle(color: Colors.orange)),
               ),
             if (!isCollection && _scryResults.isNotEmpty)
-              Flexible(fit: FlexFit.loose, child: _scryAddList()),
-            Expanded(
-              child: visibleItems.isEmpty
-                  ? Center(
-                      child: Text(
-                          _items.isEmpty
-                              ? AppLocale.t('dd_empty')
-                              : 'Nenhuma carta encontrada com os filtros atuais.',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: AppTheme.textMuted)))
-                  : _deckViewGrid
-                      ? GridView.builder(
-                          controller: _cardsScroll,
-                          padding: EdgeInsets.fromLTRB(
-                              12,
-                              12,
-                              12,
-                              12 +
-                                  MediaQuery.of(context)
-                                      .padding
-                                      .bottom),
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            // A arte ocupa todo o cartão; nome e controles ficam
-                            // por cima dela, como numa carta física.
-                            childAspectRatio: 0.69,
-                            crossAxisSpacing: 12,
-                            mainAxisSpacing: 12,
-                          ),
-                          itemCount: visibleItems.length,
-                          itemBuilder: (_, i) => _deckGridTile(_visibleItems[i]),
-                        )
-                      : ListView.builder(
-                          controller: _cardsScroll,
-                          padding: EdgeInsets.only(
-                              bottom: MediaQuery.of(context)
-                                      .padding
-                                      .bottom +
-                                  12),
-                          itemCount: visibleItems.length,
-                          itemBuilder: (_, i) {
-                            final c = visibleItems[i];
-                            final q = (c['deck_qty'] as num?)?.toInt() ?? 1;
-                            final isCommander =
-                                _commanderId == (c['id'] as int);
-                            final isCover = _previewCardId == (c['id'] as int);
-                            return ListTile(
-                              leading: isCommander
-                                  ? const Icon(Icons.shield,
-                                      color: AppTheme.gold)
-                                  : null,
-                              title: Text((c['name'] ?? '').toString(),
-                                  style: TextStyle(
-                                      fontWeight: isCommander
-                                          ? FontWeight.bold
-                                          : FontWeight.normal)),
-                              subtitle: Row(
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                        '${c['type_line'] ?? ''} • ${CurrencyService.instance.formatUsd(((c['price_usd'] ?? c['price_ref_usd']) as num?)?.toDouble() ?? 0)}',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  _availBadge(c),
-                                ],
-                              ),
-                              onTap: () => showModalBottomSheet(
-                                context: context,
-                                isScrollControlled: true,
-                                builder: (_) => CardDetailSheet(card: c),
-                              ).then((_) => _reload()),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                      icon: const Icon(
-                                          Icons.remove_circle_outline),
-                                      onPressed: () =>
-                                          _setQty(c['id'] as int, q - 1)),
-                                  Text('$q',
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.bold)),
-                                  IconButton(
-                                      icon: const Icon(Icons.add_circle,
-                                          color: AppTheme.gold),
-                                      onPressed: () =>
-                                          _setQty(c['id'] as int, q + 1)),
-                                  PopupMenuButton<String>(
-                                    onSelected: (v) {
-                                      if (v == 'commander') {
-                                        _setCommander(c['id'] as int);
-                                      } else if (v == 'uncommander') {
-                                        _setCommander(null);
-                                      } else if (v == 'cover') {
-                                        _setPreview(c['id'] as int);
-                                      } else if (v == 'uncover') {
-                                        _setPreview(null);
-                                      } else if (v == 'remove') {
-                                        _setQty(c['id'] as int, 0);
-                                      }
-                                    },
-                                    itemBuilder: (_) => [
-                                      if (!isCommander)
-                                        PopupMenuItem(
-                                            value: 'commander',
-                                            child: Text(AppLocale.t(
-                                                'dd_set_commander'))),
-                                      if (isCommander)
-                                        PopupMenuItem(
-                                            value: 'uncommander',
-                                            child: Text(
-                                                AppLocale.t('dd_uncommander'))),
-                                      if (!isCover)
-                                        PopupMenuItem(
-                                            value: 'cover',
-                                            child:
-                                                Text(AppLocale.t('dd_cover'))),
-                                      if (isCover)
-                                        PopupMenuItem(
-                                            value: 'uncover',
-                                            child: Text(
-                                                AppLocale.t('dd_uncover'))),
-                                      PopupMenuItem(
-                                          value: 'remove',
-                                          child: Text(
-                                              AppLocale.t('dd_remove_from'))),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
+              SizedBox(height: 280, child: _scryAddList()),
+            visibleItems.isEmpty
+                ? SizedBox(
+                    height: 200,
+                    child: Center(
+                        child: Text(
+                            _items.isEmpty
+                                ? AppLocale.t('dd_empty')
+                                : 'Nenhuma carta encontrada com os filtros atuais.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: AppTheme.textMuted))))
+                : _deckViewGrid
+                      ? _groupedGridView(visibleItems, nested: true)
+                      : _groupedListView(visibleItems, nested: true),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Grupo de composição da carta (comandante primeiro).
+  String _groupKeyOf(Map<String, Object?> c) {
+    if (_commanderId != null && (c['id'] as int?) == _commanderId) {
+      return CardCategory.commander;
+    }
+    return CardTypes.category(c['type_line']);
+  }
+
+  Map<String, List<Map<String, Object?>>> _groupItems(
+      List<Map<String, Object?>> items) {
+    final groups = <String, List<Map<String, Object?>>>{};
+    for (final c in items) {
+      groups.putIfAbsent(_groupKeyOf(c), () => []).add(c);
+    }
+    return groups;
+  }
+
+  int _groupQty(List<Map<String, Object?>> items) =>
+      items.fold<int>(
+          0, (s, c) => s + (((c['deck_qty'] as num?)?.toInt() ?? 0)));
+
+  /// Linha da carta no modo lista (mesmo conteúdo de antes).
+  Widget _deckListTile(Map<String, Object?> c) {
+    final q = (c['deck_qty'] as num?)?.toInt() ?? 1;
+    final isCommander = _commanderId == (c['id'] as int);
+    final isCover = _previewCardId == (c['id'] as int);
+    final thumbUrl = (c['image_url'] ?? '').toString();
+    return ListTile(
+      leading: thumbUrl.isEmpty
+          ? (isCommander
+              ? const Icon(Icons.shield, color: AppTheme.gold)
+              : null)
+          : Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: CachedNetworkImage(
+                    imageUrl: thumbUrl,
+                    width: 32,
+                    height: 44,
+                    fit: BoxFit.cover,
+                    memCacheWidth: 100,
+                    errorWidget: (_, __, ___) =>
+                        const Icon(Icons.broken_image),
+                  ),
+                ),
+                if (isCommander)
+                  const Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Icon(Icons.shield,
+                        size: 14, color: AppTheme.gold),
+                  ),
+              ],
+            ),
+      title: Text((c['name'] ?? '').toString(),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+              fontWeight: isCommander
+                  ? FontWeight.bold
+                  : FontWeight.normal)),
+      subtitle: Row(
+        children: [
+          Flexible(
+            child: Text(
+                '${c['type_line'] ?? ''} • ${CurrencyService.instance.formatUsd(((c['price_usd'] ?? c['price_ref_usd']) as num?)?.toDouble() ?? 0)}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 6),
+          _availBadge(c),
+        ],
+      ),
+      onTap: () => showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => CardDetailSheet(card: c),
+      ).then((_) => _reload()),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+              icon: const Icon(Icons.remove_circle_outline),
+              onPressed: () => _setQty(c['id'] as int, q - 1)),
+          Text('$q',
+              style: const TextStyle(fontWeight: FontWeight.bold)),
+          IconButton(
+              icon: const Icon(Icons.add_circle, color: AppTheme.gold),
+              onPressed: () => _setQty(c['id'] as int, q + 1)),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'commander') {
+                _setCommander(c['id'] as int);
+              } else if (v == 'uncommander') {
+                _setCommander(null);
+              } else if (v == 'cover') {
+                _setPreview(c['id'] as int);
+              } else if (v == 'uncover') {
+                _setPreview(null);
+              } else if (v == 'remove') {
+                _setQty(c['id'] as int, 0);
+              }
+            },
+            itemBuilder: (_) => [
+              if (!isCommander)
+                PopupMenuItem(
+                    value: 'commander',
+                    child: Text(AppLocale.t('dd_set_commander'))),
+              if (isCommander)
+                PopupMenuItem(
+                    value: 'uncommander',
+                    child: Text(AppLocale.t('dd_uncommander'))),
+              if (!isCover)
+                PopupMenuItem(
+                    value: 'cover',
+                    child: Text(AppLocale.t('dd_cover'))),
+              if (isCover)
+                PopupMenuItem(
+                    value: 'uncover',
+                    child: Text(AppLocale.t('dd_uncover'))),
+              PopupMenuItem(
+                  value: 'remove',
+                  child: Text(AppLocale.t('dd_remove_from'))),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Lista agrupada por composição (mesmo padrão da Comunidade).
+  /// Aninhada na rolagem única da página: sem controller próprio.
+  Widget _groupedListView(List<Map<String, Object?>> items,
+      {bool nested = false}) {
+    final groups = _groupItems(items);
+    return ListView(
+      controller: nested ? null : _cardsScroll,
+      shrinkWrap: nested,
+      physics: nested ? const NeverScrollableScrollPhysics() : null,
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).padding.bottom + 12),
+      children: [
+        for (final g in CardCategory.order)
+          if (groups[g] != null && groups[g]!.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+              child: DeckGroupHeader(
+                  title: deckGroupTitle(g),
+                  count: _groupQty(groups[g]!)),
+            ),
+            for (final c in groups[g]!) _deckListTile(c),
+          ],
+      ],
+    );
+  }
+
+  /// Grade agrupada por composição. 2 colunas = tile completo
+  /// (steppers); 3 colunas = tile compacto (toque abre detalhes).
+  /// Aninhada na rolagem única da página: sem controller próprio.
+  Widget _groupedGridView(List<Map<String, Object?>> items,
+      {bool nested = false}) {
+    final groups = _groupItems(items);
+    return ListView(
+      controller: nested ? null : _cardsScroll,
+      shrinkWrap: nested,
+      physics: nested ? const NeverScrollableScrollPhysics() : null,
+      padding: EdgeInsets.fromLTRB(
+          12, 12, 12, 12 + MediaQuery.of(context).padding.bottom),
+      children: [
+        for (final g in CardCategory.order)
+          if (groups[g] != null && groups[g]!.isNotEmpty) ...[
+            DeckGroupHeader(
+                title: deckGroupTitle(g),
+                count: _groupQty(groups[g]!)),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(bottom: 8),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: _gridCols,
+                childAspectRatio: _gridCols == 2 ? 0.69 : 63 / 96,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+              ),
+              itemCount: groups[g]!.length,
+              itemBuilder: (_, i) => _gridCols == 2
+                  ? _deckGridTile(groups[g]![i])
+                  : _compactGridTile(groups[g]![i]),
             ),
           ],
-        );
-      }),
-    ),
-  );
+      ],
+    );
+  }
+
+  /// Tile compacto p/ grade de 3 colunas: imagem, nome, qtd.
+  /// Toque abre a ficha (de onde dá para ajustar a quantidade).
+  Widget _compactGridTile(Map<String, Object?> c) {
+    final q = (c['deck_qty'] as num?)?.toInt() ?? 1;
+    final av = _avail.forCard((c['id'] as int?) ?? -1);
+    Widget? badge;
+    if (av.need > 0 && av.status != AvailStatus.ok) {
+      badge = Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.black54,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text('−${av.missing}',
+            style: const TextStyle(
+                color: Colors.orange,
+                fontSize: 11,
+                fontWeight: FontWeight.bold)),
+      );
+    }
+    return CardGridTile(
+      imageUrl: (c['image_url'] ?? '').toString(),
+      name: (c['name'] ?? '').toString(),
+      qtyText: '${q}x',
+      badge: badge,
+      onTap: () => showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => CardDetailSheet(card: c),
+      ).then((_) => _reload()),
+    );
   }
 
   /// Tile do deck em grade: arte inteira + qtd do deck.
@@ -2926,10 +2977,13 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
         child: Row(
           children: [
             SizedBox(
-              width: 64,
+              width: 92,
               child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
                   style: const TextStyle(
-                      color: AppTheme.textMuted, fontSize: 12)),
+                      color: AppTheme.textMuted, fontSize: 11)),
             ),
             Expanded(
               child: ClipRRect(
@@ -2966,17 +3020,15 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
 
     final t = s.types;
     final typeRows = [
-      ('Criaturas', t.creatures),
-      ('Instantâneas', t.instants),
-      ('Feitiços', t.sorceries),
-      ('Artefatos', t.artifacts),
-      ('Encantamentos', t.enchantments),
-      ('Planinautas', t.planeswalkers),
-      ('Terrenos', t.lands),
-      ('Outras', t.other),
+      (AppLocale.t('cat_creatures'), t.creatures),
+      (AppLocale.t('cat_instants'), t.instants),
+      (AppLocale.t('cat_sorceries'), t.sorceries),
+      (AppLocale.t('cat_artifacts'), t.artifacts),
+      (AppLocale.t('cat_enchantments'), t.enchantments),
+      (AppLocale.t('cat_planeswalkers'), t.planeswalkers),
+      (AppLocale.t('cat_lands'), t.lands),
+      (AppLocale.t('cat_other'), t.other),
     ];
-    final curveMax = [for (var i = 0; i <= 6; i++) s.curve[i] ?? 0]
-        .fold<int>(1, (m, v) => v > m ? v : m);
     final typeMax =
         [...typeRows.map((e) => e.$2)].fold<int>(1, (m, v) => v > m ? v : m);
     return Card(
@@ -2989,19 +3041,9 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
       ),
       child: ExpansionTile(
         dense: true,
-        // Ao fechar, o conteúdo encolhe: zera o scroll do topo e
-        // realinha a grade (como no cabeçalho).
         onExpansionChanged: (open) {
           if (mounted) {
             setState(() => _statsExpanded = open);
-          }
-          if (!open) {
-            if (_topScroll.hasClients) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (_topScroll.hasClients) _topScroll.jumpTo(0);
-              });
-            }
-            _snapCardsToRow();
           }
         },
         // Cabeçalho e corpo com o mesmo raio do Card (sem quina).
@@ -3027,12 +3069,7 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(AppLocale.t('stats_curve'),
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 13)),
-                for (var i = 0; i <= 6; i++)
-                  barRow(i == 6 ? '6+' : '$i', s.curve[i] ?? 0,
-                      curveMax, AppTheme.gold),
+                ManaCurveChart(curve: s.curve),
                 const SizedBox(height: 8),
                 Text(AppLocale.t('stats_types'),
                     style: const TextStyle(
@@ -3071,11 +3108,48 @@ class _DeckDetailPageState extends State<DeckDetailPage> {
                   ],
                 ),
                 const SizedBox(height: 8),
+                Text(AppLocale.t('stats_lands_title'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    _landStat(
+                        AppLocale.t('stats_lands_total'), s.landCount),
+                    _landStat(AppLocale.t('stats_lands_basic'),
+                        s.basicLands),
+                    _landStat(AppLocale.t('stats_lands_nonbasic'),
+                        s.landCount - s.basicLands),
+                    _landStat(AppLocale.t('stats_lands_multi'),
+                        s.multiColorLands),
+                    _landStat(
+                        AppLocale.t('stats_lands_colorless'),
+                        s.colorlessLands),
+                  ],
+                ),
+                const SizedBox(height: 8),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _landStat(String label, int value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$value',
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 13)),
+        const SizedBox(width: 4),
+        Text(label,
+            style: const TextStyle(
+                color: AppTheme.textMuted, fontSize: 12)),
+      ],
     );
   }
 

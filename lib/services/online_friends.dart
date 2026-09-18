@@ -3,8 +3,10 @@ import 'dart:math';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'online_match.dart';
+import 'card_types.dart';
 
 /// Amigo online (identidade = UID Firebase; nome é só exibição).
 class OnlineFriend {
@@ -144,19 +146,141 @@ class OnlineFriends {
 
   static const _codeAlphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
+  /// Futuros de sign-in anônimo em voo, um por FirebaseAuth.
+  static final Map<FirebaseAuth, Future<String>> _anonInflight = {};
+
+  /// Código personalizado: MAIÚSCULAS, letras/números/_/-, 3-16 chars.
+  /// "#Meu Codigo" -> "MEU_CODIGO". Hífen preservado para os códigos
+  /// legados "MC-XXXXX" continuarem acháveis. Retorna '' se vazio.
+  static String sanitizeCode(String raw) {
+    var s = CardTypes.flat(raw).toUpperCase();
+    if (s.startsWith('#')) s = s.substring(1);
+    s = s.replaceAll(RegExp(r'\s+'), '_');
+    s = s.replaceAll(RegExp(r'[^A-Z0-9_\-]'), '');
+    s = s.replaceAll(RegExp(r'_+'), '_');
+    s = s.replaceAll(RegExp(r'^_+|_+$'), '');
+    return s;
+  }
+
+  /// Entrada de busca: aceita com/sem #, minúsculas e espaços
+  /// ("#meu codigo" acha "MEU_CODIGO").
+  static String normalizeLookup(String raw) => sanitizeCode(raw);
+
+  /// Último código conhecido do slot (p/ exibir sem sessão).
+  static Future<String> cachedCode(String profileId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('known_code_$profileId') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static Future<void> _cacheCode(
+      String profileId, String code) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('known_code_$profileId', code);
+    } catch (_) {}
+  }
+
+  /// Troca o código do perfil (ex. "#MEUCODIGO").
+  /// Garante unicidade global: a rule nega se outro UID já tem.
+  /// Erros: FormatException('invalid') | FormatException('taken').
+  Future<String> setFriendCode({
+    required String profileId,
+    required String rawCode,
+  }) async {
+    final uid = await myUid;
+    final code = sanitizeCode(rawCode);
+    if (code.length < 3 || code.length > 16) {
+      throw const FormatException('invalid');
+    }
+    final ref = _database.ref('users/$uid/profiles/$profileId');
+    final snap = await ref.get();
+    final cur = snap.value is Map
+        ? Map<String, dynamic>.from(
+            (snap.value as Map).map((k, v) => MapEntry(k.toString(), v)))
+        : <String, dynamic>{};
+    final oldCode = (cur['friendCode'] ?? '').toString();
+    if (oldCode == code) return code;
+    // Checagem amigável; a atomicidade real é da rule (!data.exists()).
+    try {
+      final taken = await _database.ref('friendCodes/$code').get();
+      if (taken.exists) {
+        final m = taken.value is Map
+            ? Map<String, dynamic>.from((taken.value as Map)
+                .map((k, v) => MapEntry(k.toString(), v)))
+            : <String, dynamic>{};
+        if ((m['uid'] ?? '').toString() != uid) {
+          throw const FormatException('taken');
+        }
+      }
+      await _database.ref('friendCodes/$code').set({
+        'uid': uid,
+        'profileId': profileId,
+      });
+    } catch (e) {
+      if (e is FormatException) rethrow;
+      throw const FormatException('taken');
+    }
+    try {
+      await ref.update({'friendCode': code});
+    } catch (_) {}
+    if (oldCode.isNotEmpty) {
+      try {
+        await _database.ref('friendCodes/$oldCode').remove();
+      } catch (_) {}
+    }
+    // Mantém o perfil público coerente (melhor esforço).
+    try {
+      await _database
+          .ref('users/$uid/publicProfile/friendCode')
+          .set(code);
+    } catch (_) {}
+    await _cacheCode(profileId, code);
+    return code;
+  }
+
   Future<String> get myUid async {
     final current = _auth.currentUser;
     if (current != null) return current.uid;
-    final cred = await _auth.signInAnonymously();
-    final user = cred.user;
-    if (user == null) throw StateError('Sem identidade online.');
-    return user.uid;
+    // Single-flight por instância: N chamadas concorrentes com
+    // currentUser==null (ex. várias tabs recarregando após logout)
+    // criavam N usuários novos. Todas aguardam a mesma criação.
+    return _anonInflight.putIfAbsent(_auth, () async {
+      try {
+        final again = _auth.currentUser;
+        if (again != null) return again.uid;
+        final cred = await _auth.signInAnonymously();
+        final user = cred.user;
+        if (user == null) throw StateError('Sem identidade online.');
+        return user.uid;
+      } finally {
+        _anonInflight.remove(_auth);
+      }
+    });
   }
 
-  /// Código público deste perfil (cria se não existir). Estável.
-  /// Reaponta o índice a cada abertura: se o UID mudou (reinstalação
-  /// em outro aparelho, nova identidade), o código volta a funcionar
-  /// em vez de apontar para um UID morto.
+  /// Identidade online ÚNICA por conta Firebase, estável entre
+  /// aparelhos. Usada pelas contas PERMANENTES.
+  static const accountProfileId = 'main';
+
+  /// Slot online a usar: permanentes usam 'main' (estável entre
+  /// aparelhos); convidados usam o id da linha local (estável no
+  /// aparelho, reativável sem credencial). Puro e testado.
+  static String slotFor(
+      {required bool isPermanent, required String localRowId}) {
+    if (isPermanent) return accountProfileId;
+    if (localRowId.isNotEmpty) return localRowId;
+    return accountProfileId;
+  }
+
+  /// Código público da conta (cria se não existir). Regra fundamental:
+  /// conta existente (mesmo UID) NUNCA é renomeada nem recodificada —
+  /// carrega nick e código como estão, mesmo em aparelho novo.
+  /// Só conta realmente nova (sem perfil no UID) ganha identidade,
+  /// com o nick escolhido pelo usuário e código derivado dele.
   Future<String> ensureFriendCode({
     required String profileId,
     required String name,
@@ -170,35 +294,128 @@ class OnlineFriends {
         : <String, dynamic>{};
     final existing = (cur['friendCode'] ?? '').toString();
     if (existing.isNotEmpty) {
-      await ref.update({
-        'name': name.trim().isEmpty ? 'Jogador' : name.trim(),
-        'updatedAt': ServerValue.timestamp,
-      });
-      // Reaponta o índice (o UID pode ter mudado desde a criação).
+      // Existe: só garante o índice (aponta para este UID/perfil).
+      // NÃO toca em nome nem código — primeiro acesso no aparelho
+      // não é conta nova.
       try {
         await _database.ref('friendCodes/$existing').set({
           'uid': uid,
           'profileId': profileId,
         });
       } catch (_) {}
+      // Limpeza de legados só no slot único ('main'): slots por
+      // perfil de convidado são identidades independentes legítimas.
+      if (profileId == accountProfileId) {
+        await _dropStaleUidCodes(uid,
+            keepProfile: profileId, keepCode: existing);
+      }
+      await _cacheCode(profileId, existing);
       return existing;
     }
+    final code = await _claimCode(
+        uid: uid, profileId: profileId, name: name);
+    if (profileId == accountProfileId) {
+      await _dropStaleUidCodes(uid,
+          keepProfile: profileId, keepCode: code);
+    }
+    await _cacheCode(profileId, code);
+    return code;
+  }
+
+  /// Remove índices/linhas de identidades legadas do MESMO uid
+  /// (profileIds locais de aparelhos antigos). Só o dono escreve aqui.
+  /// Nunca remove o código vigente (keepCode).
+  Future<void> _dropStaleUidCodes(String uid,
+      {required String keepProfile, required String keepCode}) async {
+    try {
+      final all =
+          await _database.ref('users/$uid/profiles').get();
+      if (all.value is! Map) return;
+      final rows = Map<String, dynamic>.from((all.value as Map)
+          .map((k, v) => MapEntry(k.toString(), v)));
+      for (final e in rows.entries) {
+        if (e.key == keepProfile || e.value is! Map) continue;
+        final m = Map<String, dynamic>.from((e.value as Map)
+            .map((k, v) => MapEntry(k.toString(), v)));
+        final stale = (m['friendCode'] ?? '').toString();
+        if (stale.isNotEmpty && stale != keepCode) {
+          try {
+            await _database.ref('friendCodes/$stale').remove();
+          } catch (_) {}
+        }
+        // Linha legada sai mesmo que o código tenha sido reaproveitado
+        // (o índice já aponta para o perfil vigente).
+        try {
+          await _database
+              .ref('users/$uid/profiles/${e.key}')
+              .remove();
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  /// Gera e assume um código novo: nome do perfil ("João Silva" ->
+  /// "JOAO_SILVA", "JOAO_SILVA2"...), senão MC- aleatório.
+  /// Se o código for do próprio UID (migração), reassume em vez de
+  /// numerar: nunca "Aldrin2" para a mesma conta.
+  Future<String> _claimCode({
+    required String uid,
+    required String profileId,
+    required String name,
+  }) async {
+    final ref = _database.ref('users/$uid/profiles/$profileId');
+    final displayName =
+        name.trim().isEmpty ? 'Jogador' : name.trim();
+
+    Future<String?> tryTake(String candidate) async {
+      try {
+        final hit =
+            await _database.ref('friendCodes/$candidate').get();
+        if (hit.exists) {
+          final m = hit.value is Map
+              ? Map<String, dynamic>.from((hit.value as Map)
+                  .map((k, v) => MapEntry(k.toString(), v)))
+              : <String, dynamic>{};
+          // Mesmo UID (migração de aparelho/perfil): reassume.
+          if ((m['uid'] ?? '').toString() != uid) return null;
+        }
+        await _database.ref('friendCodes/$candidate').set({
+          'uid': uid,
+          'profileId': profileId,
+        });
+      } catch (_) {
+        return null;
+      }
+      try {
+        await ref.set({
+          'friendCode': candidate,
+          'name': displayName,
+          'updatedAt': ServerValue.timestamp,
+        });
+      } catch (_) {
+        return null;
+      }
+      return candidate;
+    }
+
     final rnd = Random.secure();
+    var base = sanitizeCode(name);
+    if (base.length > 12) base = base.substring(0, 12);
+    if (base.length >= 3) {
+      for (var n = 0; n < 100; n++) {
+        var candidate = n == 0 ? base : '$base$n';
+        if (candidate.length > 16) {
+          candidate = candidate.substring(0, 16);
+        }
+        final got = await tryTake(candidate);
+        if (got != null) return got;
+      }
+    }
     for (var i = 0; i < 12; i++) {
       final code =
           'MC-${List.generate(5, (_) => _codeAlphabet[rnd.nextInt(_codeAlphabet.length)]).join()}';
-      final taken = await _database.ref('friendCodes/$code').get();
-      if (taken.exists) continue;
-      await _database.ref('friendCodes/$code').set({
-        'uid': uid,
-        'profileId': profileId,
-      });
-      await ref.set({
-        'friendCode': code,
-        'name': name.trim().isEmpty ? 'Jogador' : name.trim(),
-        'updatedAt': ServerValue.timestamp,
-      });
-      return code;
+      final got = await tryTake(code);
+      if (got != null) return got;
     }
     throw StateError('Não foi possível gerar um código único.');
   }
@@ -207,7 +424,7 @@ class OnlineFriends {
   /// Código de perfil apagado/reinstalado (UID morto): avisa como
   /// expirado em vez de mandar o pedido para o vazio.
   Future<Map<String, String>?> lookupCode(String rawCode) async {
-    final code = rawCode.trim().toUpperCase();
+    final code = normalizeLookup(rawCode);
     if (code.isEmpty) return null;
     final snap = await _database.ref('friendCodes/$code').get();
     if (!snap.exists || snap.value is! Map) return null;

@@ -1,30 +1,54 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:magic_collection/widgets/deck_view.dart';
+import 'package:magic_collection/widgets/mana_curve_chart.dart';
 
-import 'package:magic_collection/main.dart';
+// Smoke tests dos componentes compartilhados de deck (sem rede,
+// sem banco, sem Firebase).
+
+Widget _wrap(Widget child) =>
+    MaterialApp(home: Scaffold(body: child));
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MagicCollectionApp());
+  testWidgets('DeckViewToggle alterna lista/grade', (t) async {
+    var grid = false;
+    await t.pumpWidget(_wrap(DeckViewToggle(
+      grid: grid,
+      onChanged: (v) => grid = v,
+    )));
+    expect(find.text('Grade'), findsOneWidget);
+    await t.tap(find.text('Grade'));
+    await t.pump();
+    expect(grid, isTrue);
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  testWidgets('GridColumnsToggle escolhe 2 ou 3', (t) async {
+    var cols = 2;
+    await t.pumpWidget(_wrap(GridColumnsToggle(
+      columns: cols,
+      onChanged: (v) => cols = v,
+    )));
+    await t.tap(find.text('3'));
+    await t.pump();
+    expect(cols, 3);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('ManaCurveChart mostra 0..6+ e valores', (t) async {
+    await t.pumpWidget(_wrap(ManaCurveChart(
+      curve: {for (var i = 0; i <= 6; i++) i: i},
+    )));
+    expect(find.text('6+'), findsOneWidget);
+    expect(find.text('5'), findsWidgets);
+    expect(find.text('0'), findsWidgets);
+  });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  testWidgets('CardGridTile mostra nome e quantidade', (t) async {
+    await t.pumpWidget(_wrap(const CardGridTile(
+      imageUrl: '',
+      name: 'Relâmpago',
+      qtyText: '4x',
+    )));
+    expect(find.text('Relâmpago'), findsOneWidget);
+    expect(find.text('4x'), findsOneWidget);
   });
 }

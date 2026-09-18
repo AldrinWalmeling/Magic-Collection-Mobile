@@ -1,0 +1,215 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "communityDecks": {
+      ".read": "auth != null",
+      ".indexOn": ["updatedAt", "authorUid", "format"],
+      "$deckId": {
+        ".write": "(!data.exists() && newData.exists() && newData.child('authorUid').val() === auth.uid) || (!newData.exists() && data.exists() && data.child('authorUid').val() === auth.uid) || (data.exists() && newData.exists() && data.child('authorUid').val() === auth.uid && newData.child('authorUid').val() === data.child('authorUid').val())",
+        ".validate": "newData.hasChildren(['name', 'authorUid'])",
+        "likes": {
+          ".write": "auth != null",
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "favorites": {
+          ".write": "auth != null",
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "views": {
+          ".write": "auth != null",
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "ratingSum": {
+          ".write": "auth != null",
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "ratingCount": {
+          ".write": "auth != null",
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        }
+      }
+    },
+    "communityCards": {
+      ".read": "auth != null",
+      "$deckId": {
+        ".write": "root.child('communityDecks').child($deckId).child('authorUid').val() === auth.uid"
+      }
+    },
+    "deckLikes": {
+      ".read": "auth != null",
+      "$deckId": {
+        "$uid": {
+          ".write": "auth.uid === $uid || (!newData.exists() && root.child('communityDecks').child($deckId).child('authorUid').val() === auth.uid)"
+        }
+      }
+    },
+    "deckRatings": {
+      ".read": "auth != null",
+      "$deckId": {
+        "$uid": {
+          ".write": "auth.uid === $uid || (!newData.exists() && root.child('communityDecks').child($deckId).child('authorUid').val() === auth.uid)",
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5"
+        }
+      }
+    },
+    "deckViewers": {
+      ".read": "auth != null",
+      "$deckId": {
+        "$uid": {
+          ".write": "auth.uid === $uid || (!newData.exists() && root.child('communityDecks').child($deckId).child('authorUid').val() === auth.uid)"
+        }
+      }
+    },
+    "deckFavorites": {
+      ".read": "auth != null",
+      "$deckId": {
+        "$uid": {
+          ".write": "auth.uid === $uid || (!newData.exists() && root.child('communityDecks').child($deckId).child('authorUid').val() === auth.uid)"
+        }
+      }
+    },
+    "userFavorites": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "userDecks": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "userCards": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "userSync": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "userPublished": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "userActivity": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "blocks": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        ".write": "auth.uid === $uid"
+      }
+    },
+    "users": {
+      "$uid": {
+        "profiles": {
+          "$profileId": {
+            ".read": "auth != null",
+            ".write": "auth.uid === $uid",
+            ".validate": "newData.hasChildren(['friendCode', 'name'])"
+          }
+        },
+        "publicProfile": {
+          ".read": "auth != null",
+          ".write": "auth.uid === $uid",
+          ".validate": "newData.hasChild('displayName')"
+        },
+        "publicCollection": {
+          ".read": "auth != null",
+          ".write": "auth.uid === $uid"
+        }
+      }
+    },
+    "friendCodes": {
+      ".read": "auth != null",
+      "$code": {
+        ".write": "(newData.exists() && newData.child('uid').val() === auth.uid && (!data.exists() || data.child('uid').val() === auth.uid)) || (!newData.exists() && data.exists() && data.child('uid').val() === auth.uid)",
+        ".validate": "newData.hasChildren(['uid', 'profileId'])"
+      }
+    },
+    "friendRequests": {
+      "$toUid": {
+        ".read": "auth.uid === $toUid",
+        "$reqId": {
+          ".write": "(!data.exists() && newData.exists() && newData.child('fromUid').val() === auth.uid && $toUid !== auth.uid) || (!newData.exists() && (auth.uid === $toUid || data.child('fromUid').val() === auth.uid))",
+          ".validate": "newData.hasChildren(['fromUid', 'toProfile', 'at'])"
+        }
+      }
+    },
+    "friends": {
+      "$uid": {
+        ".read": "auth.uid === $uid",
+        "$key": {
+          ".write": "auth.uid === $uid || ($key.beginsWith(auth.uid + '__') && (!data.exists() || !newData.exists()))",
+          ".validate": "newData.hasChildren(['name'])"
+        }
+      }
+    },
+    "presence": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth.uid === $uid",
+        ".validate": "newData.hasChild('online')"
+      }
+    },
+    "roomInvites": {
+      "$toUid": {
+        ".read": "auth.uid === $toUid",
+        "$invId": {
+          ".write": "(!data.exists() && newData.exists() && newData.child('fromUid').val() === auth.uid) || (!newData.exists() && (auth.uid === $toUid || data.child('fromUid').val() === auth.uid))",
+          ".validate": "newData.hasChildren(['fromUid', 'roomCode'])"
+        }
+      }
+    },
+    "rooms": {
+      "$roomCode": {
+        ".read": "auth != null",
+        ".write": "(!data.exists() && newData.exists() && newData.child('hostId').val() === auth.uid) || (!newData.exists() && data.exists() && data.child('hostId').val() === auth.uid)",
+        ".validate": "newData.hasChildren(['hostId', 'players', 'settings', 'state', 'status'])",
+        "hostId": {
+          ".validate": "!data.exists() || newData.val() === data.val()"
+        },
+        "status": {
+          ".write": "root.child('rooms').child($roomCode).child('hostId').val() === auth.uid",
+          ".validate": "newData.val() === 'waiting' || newData.val() === 'started'"
+        },
+        "maxPlayers": {
+          ".write": "root.child('rooms').child($roomCode).child('hostId').val() === auth.uid",
+          ".validate": "newData.isNumber() && newData.val() >= 2 && newData.val() <= 6"
+        },
+        "settings": {
+          ".write": "root.child('rooms').child($roomCode).child('hostId').val() === auth.uid"
+        },
+        "state": {
+          ".write": "root.child('rooms').child($roomCode).child('hostId').val() === auth.uid"
+        },
+        "updatedAt": {
+          ".write": "root.child('rooms').child($roomCode).child('hostId').val() === auth.uid || root.child('rooms').child($roomCode).child('players').hasChild(auth.uid)"
+        },
+        "players": {
+          "$playerUid": {
+            ".write": "auth.uid === $playerUid || (!newData.exists() && root.child('rooms').child($roomCode).child('hostId').val() === auth.uid)",
+            ".validate": "newData.hasChild('name')"
+          }
+        },
+        "actions": {
+          "$actionId": {
+            ".write": "(!data.exists() && newData.exists() && newData.child('fromUid').val() === auth.uid && (root.child('rooms').child($roomCode).child('players').hasChild(auth.uid) || root.child('rooms').child($roomCode).child('hostId').val() === auth.uid)) || (!newData.exists() && root.child('rooms').child($roomCode).child('hostId').val() === auth.uid)"
+          }
+        }
+      }
+    }
+  }
+}

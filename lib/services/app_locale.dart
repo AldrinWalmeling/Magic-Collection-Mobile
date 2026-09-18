@@ -301,6 +301,12 @@ class AppLocale {
     },
     'nav_decks': {'pt': 'Decks', 'en': 'Decks', 'es': 'Mazos', 'zh': '套牌'},
     'nav_play': {'pt': 'Jogar', 'en': 'Play', 'es': 'Jugar', 'zh': '对战'},
+    'nav_social': {
+      'pt': 'Social',
+      'en': 'Social',
+      'es': 'Social',
+      'zh': '社交'
+    },
     'nav_profiles': {
       'pt': 'Perfis',
       'en': 'Profiles',
@@ -312,6 +318,1056 @@ class AppLocale {
       'en': 'Settings',
       'es': 'Ajustes',
       'zh': '设置'
+    },
+    'soc_community': {
+      'pt': 'Comunidade',
+      'en': 'Community',
+      'es': 'Comunidad',
+      'zh': '社区'
+    },
+    'soc_profile': {
+      'pt': 'Meu Perfil',
+      'en': 'My Profile',
+      'es': 'Mi perfil',
+      'zh': '我的资料'
+    },
+    'soc_friends': {
+      'pt': 'Amigos',
+      'en': 'Friends',
+      'es': 'Amigos',
+      'zh': '好友'
+    },
+    'com_search_hint': {
+      'pt': 'Buscar deck, comandante, autor, tag…',
+      'en': 'Search deck, commander, author, tag…',
+      'es': 'Buscar mazo, comandante, autor, etiqueta…',
+      'zh': '搜索套牌、指挥官、作者、标签…'
+    },
+    'com_section_all': {
+      'pt': 'Todos',
+      'en': 'All',
+      'es': 'Todos',
+      'zh': '全部'
+    },
+    'com_section_trending': {
+      'pt': 'Em alta',
+      'en': 'Trending',
+      'es': 'Tendencia',
+      'zh': '热门'
+    },
+    'com_section_liked': {
+      'pt': 'Curtidos',
+      'en': 'Most liked',
+      'es': 'Gustados',
+      'zh': '点赞最多'
+    },
+    'com_section_favorited': {
+      'pt': 'Favoritos',
+      'en': 'Most favorited',
+      'es': 'Favoritos',
+      'zh': '收藏最多'
+    },
+    'com_section_viewed': {
+      'pt': 'Vistos',
+      'en': 'Most viewed',
+      'es': 'Vistos',
+      'zh': '浏览最多'
+    },
+    'com_section_recent': {
+      'pt': 'Recentes',
+      'en': 'Recent',
+      'es': 'Recientes',
+      'zh': '最新'
+    },
+    'com_section_favorites': {
+      'pt': 'Meus favoritos',
+      'en': 'My favorites',
+      'es': 'Mis favoritos',
+      'zh': '我的收藏'
+    },
+    'com_section_friends': {
+      'pt': 'De amigos',
+      'en': 'From friends',
+      'es': 'De amigos',
+      'zh': '好友的'
+    },
+    'com_scope_all': {
+      'pt': 'Buscar em tudo',
+      'en': 'Search everything',
+      'es': 'Buscar en todo',
+      'zh': '搜索全部'
+    },
+    'com_scope_deck': {
+      'pt': 'Buscar deck',
+      'en': 'Search deck',
+      'es': 'Buscar mazo',
+      'zh': '搜索套牌'
+    },
+    'com_scope_commander': {
+      'pt': 'Buscar comandante',
+      'en': 'Search commander',
+      'es': 'Buscar comandante',
+      'zh': '搜索指挥官'
+    },
+    'com_scope_card': {
+      'pt': 'Buscar carta em decks',
+      'en': 'Find card in decks',
+      'es': 'Buscar carta en mazos',
+      'zh': '在套牌中找牌'
+    },
+    'com_scope_author': {
+      'pt': 'Buscar autor',
+      'en': 'Search author',
+      'es': 'Buscar autor',
+      'zh': '搜索作者'
+    },
+    'com_format_all': {
+      'pt': 'Todos os formatos',
+      'en': 'All formats',
+      'es': 'Todos los formatos',
+      'zh': '全部赛制'
+    },
+    'com_empty': {
+      'pt': 'Nada por aqui ainda. Publique um deck ou ajuste os filtros.',
+      'en': 'Nothing here yet. Publish a deck or adjust the filters.',
+      'es': 'Nada aquí todavía. Publica un mazo o ajusta los filtros.',
+      'zh': '这里还没有内容。发布套牌或调整筛选。'
+    },
+    'com_gone': {
+      'pt': 'Esta publicação não existe mais.',
+      'en': 'This post no longer exists.',
+      'es': 'Esta publicación ya no existe.',
+      'zh': '该分享已不存在。'
+    },
+    'com_rate_title': {
+      'pt': 'Avaliar deck',
+      'en': 'Rate deck',
+      'es': 'Calificar mazo',
+      'zh': '评价套牌'
+    },
+    'com_rated': {
+      'pt': 'Avaliação salva.',
+      'en': 'Rating saved.',
+      'es': 'Calificación guardada.',
+      'zh': '评分已保存。'
+    },
+    'com_rate': {
+      'pt': 'Avaliar',
+      'en': 'Rate',
+      'es': 'Calificar',
+      'zh': '评价'
+    },
+    'com_copied_full': {
+      'pt': 'Deck copiado! Você tem todas as cartas.',
+      'en': 'Deck copied! You own every card.',
+      'es': '¡Mazo copiado! Tienes todas las cartas.',
+      'zh': '套牌已复制！你拥有全部牌。'
+    },
+    'com_copied_missing': {
+      'pt': 'Deck copiado! Faltam {n} cartas na sua coleção.',
+      'en': 'Deck copied! {n} cards missing from your collection.',
+      'es': '¡Mazo copiado! Te faltan {n} cartas.',
+      'zh': '套牌已复制！你的收藏还缺 {n} 张。'
+    },
+    'com_share_text': {
+      'pt': 'Olha este deck: {n} (código {c})',
+      'en': 'Check out this deck: {n} (code {c})',
+      'es': 'Mira este mazo: {n} (código {c})',
+      'zh': '看看这套牌：{n}（代码 {c}）'
+    },
+    'com_publish': {
+      'pt': 'Publicar',
+      'en': 'Publish',
+      'es': 'Publicar',
+      'zh': '发布'
+    },
+    'com_publish_empty': {
+      'pt': 'Deck vazio — adicione cartas antes de publicar.',
+      'en': 'Empty deck — add cards before publishing.',
+      'es': 'Mazo vacío — añade cartas antes de publicar.',
+      'zh': '套牌为空——发布前请先添加牌。'
+    },
+    'com_publish_title': {
+      'pt': 'Publicar na Comunidade',
+      'en': 'Publish to Community',
+      'es': 'Publicar en la Comunidad',
+      'zh': '发布到社区'
+    },
+    'com_publish_name': {
+      'pt': 'Nome público',
+      'en': 'Public name',
+      'es': 'Nombre público',
+      'zh': '公开名称'
+    },
+    'com_publish_desc': {
+      'pt': 'Descrição / como jogar',
+      'en': 'Description / how to play',
+      'es': 'Descripción / cómo jugar',
+      'zh': '描述 / 玩法'
+    },
+    'com_publish_tags': {
+      'pt': 'Tags (separadas por vírgula)',
+      'en': 'Tags (comma separated)',
+      'es': 'Etiquetas (separadas por comas)',
+      'zh': '标签（用逗号分隔）'
+    },
+    'com_publish_tags_hint': {
+      'pt': 'ex: aggro, budget, tribal',
+      'en': 'e.g. aggro, budget, tribal',
+      'es': 'ej.: aggro, budget, tribal',
+      'zh': '例如：aggro、budget、tribal'
+    },
+    'com_publish_archetype': {
+      'pt': 'Arquétipo (opcional)',
+      'en': 'Archetype (optional)',
+      'es': 'Arquetipo (opcional)',
+      'zh': '类型（可选）'
+    },
+    'com_publish_allow_copy': {
+      'pt': 'Permitir que copiem este deck',
+      'en': 'Allow others to copy this deck',
+      'es': 'Permitir que copien este mazo',
+      'zh': '允许他人复制此套牌'
+    },
+    'com_publish_need_name': {
+      'pt': 'Dê um nome ao deck.',
+      'en': 'Give the deck a name.',
+      'es': 'Ponle un nombre al mazo.',
+      'zh': '请给套牌起个名字。'
+    },
+    'com_copy': {
+      'pt': 'Copiar deck',
+      'en': 'Copy deck',
+      'es': 'Copiar mazo',
+      'zh': '复制套牌'
+    },
+    'com_export': {
+      'pt': 'Exportar',
+      'en': 'Export',
+      'es': 'Exportar',
+      'zh': '导出'
+    },
+    'com_export_txt': {
+      'pt': 'Lista (.txt)',
+      'en': 'List (.txt)',
+      'es': 'Lista (.txt)',
+      'zh': '列表（.txt）'
+    },
+    'com_export_json': {
+      'pt': 'Completo (.json)',
+      'en': 'Full (.json)',
+      'es': 'Completo (.json)',
+      'zh': '完整（.json）'
+    },
+    'com_share': {
+      'pt': 'Compartilhar',
+      'en': 'Share',
+      'es': 'Compartir',
+      'zh': '分享'
+    },
+    'com_republish_title': {
+      'pt': 'Deck já publicado',
+      'en': 'Deck already published',
+      'es': 'Mazo ya publicado',
+      'zh': '套牌已发布'
+    },
+    'com_republish_body': {
+      'pt': '"{n}" já está na Comunidade. Atualizar mantém curtidas, avaliações e views; publicar como novo cria outra cópia.',
+      'en': '"{n}" is already in the Community. Updating keeps likes, ratings and views; publishing as new creates another copy.',
+      'es': '"{n}" ya está en la Comunidad. Actualizar conserva me gusta, calificaciones y vistas; publicar como nuevo crea otra copia.',
+      'zh': '“{n}”已在社区中。更新会保留点赞、评分和浏览；发布为新分享会创建另一个副本。'
+    },
+    'com_republish': {
+      'pt': 'Atualizar',
+      'en': 'Update',
+      'es': 'Actualizar',
+      'zh': '更新'
+    },
+    'com_publish_new': {
+      'pt': 'Publicar como novo',
+      'en': 'Publish as new',
+      'es': 'Publicar como nuevo',
+      'zh': '发布为新的'
+    },
+    'com_updated': {
+      'pt': 'Publicação atualizada.',
+      'en': 'Post updated.',
+      'es': 'Publicación actualizada.',
+      'zh': '分享已更新。'
+    },
+    'com_published': {
+      'pt': 'Deck publicado na Comunidade!',
+      'en': 'Deck published to the Community!',
+      'es': '¡Mazo publicado en la Comunidad!',
+      'zh': '套牌已发布到社区！'
+    },
+    'com_published_badge': {
+      'pt': 'Publicado na Comunidade — toque para ver',
+      'en': 'Published to Community — tap to view',
+      'es': 'Publicado en la Comunidad — toca para ver',
+      'zh': '已发布到社区——点击查看'
+    },
+    'soc_share_collection': {
+      'pt': 'Compartilhar coleção',
+      'en': 'Share collection',
+      'es': 'Compartir colección',
+      'zh': '分享收藏'
+    },
+    'soc_share_collection_sub': {
+      'pt': 'Mostra só totais no seu perfil (nunca cartas individuais).',
+      'en': 'Shows only totals on your profile (never individual cards).',
+      'es': 'Muestra solo totales en tu perfil (nunca cartas individuales).',
+      'zh': '仅在资料页显示总数（不显示单张牌）。'
+    },
+    'soc_sync_now': {
+      'pt': 'Atualizar',
+      'en': 'Refresh',
+      'es': 'Actualizar',
+      'zh': '刷新'
+    },
+    'soc_synced': {
+      'pt': 'Coleção sincronizada.',
+      'en': 'Collection synced.',
+      'es': 'Colección sincronizada.',
+      'zh': '收藏已同步。'
+    },
+    'soc_total': {
+      'pt': 'cartas',
+      'en': 'cards',
+      'es': 'cartas',
+      'zh': '张'
+    },
+    'soc_distinct': {
+      'pt': 'únicas',
+      'en': 'unique',
+      'es': 'únicas',
+      'zh': '不同'
+    },
+    'soc_collection_title': {
+      'pt': 'Coleção',
+      'en': 'Collection',
+      'es': 'Colección',
+      'zh': '收藏'
+    },
+    'soc_top_sets': {
+      'pt': 'Edições com mais cartas',
+      'en': 'Top sets by cards',
+      'es': 'Ediciones con más cartas',
+      'zh': '牌最多的系列'
+    },
+    'soc_tab_decks': {
+      'pt': 'Decks',
+      'en': 'Decks',
+      'es': 'Mazos',
+      'zh': '套牌'
+    },
+    'soc_tab_panel': {
+      'pt': 'Painel',
+      'en': 'Overview',
+      'es': 'Panel',
+      'zh': '总览'
+    },
+    'soc_tab_collection': {
+      'pt': 'Coleção',
+      'en': 'Collection',
+      'es': 'Colección',
+      'zh': '收藏'
+    },
+    'soc_views': {
+      'pt': 'Views',
+      'en': 'Views',
+      'es': 'Vistas',
+      'zh': '浏览'
+    },
+    'soc_avg_rating': {
+      'pt': 'Nota média',
+      'en': 'Avg rating',
+      'es': 'Nota media',
+      'zh': '平均评分'
+    },
+    'soc_top_deck': {
+      'pt': 'Destaque',
+      'en': 'Top deck',
+      'es': 'Destacado',
+      'zh': '代表作'
+    },
+    'soc_formats': {
+      'pt': 'Formatos',
+      'en': 'Formats',
+      'es': 'Formatos',
+      'zh': '赛制'
+    },
+    'soc_collection_hidden': {
+      'pt': 'Este jogador não compartilha a coleção.',
+      'en': 'This player does not share the collection.',
+      'es': 'Este jugador no comparte la colección.',
+      'zh': '该玩家未分享收藏。'
+    },
+    'fr_edit_code': {
+      'pt': 'Trocar meu código',
+      'en': 'Change my code',
+      'es': 'Cambiar mi código',
+      'zh': '更改我的代码'
+    },
+    'fr_code_hint': {
+      'pt': 'Ex: MEUCODIGO',
+      'en': 'E.g. MYCODE',
+      'es': 'Ej.: MICODIGO',
+      'zh': '例如：MYCODE'
+    },
+    'fr_code_rules': {
+      'pt': '3 a 16 letras/números. Único para todo o app: se estiver em uso, escolha outro.',
+      'en': '3–16 letters/numbers. Unique app-wide: if taken, pick another.',
+      'es': '3–16 letras/números. Único en la app: si está en uso, elige otro.',
+      'zh': '3-16 个字母/数字，全应用唯一；若被占用请换一个。'
+    },
+    'fr_taken': {
+      'pt': 'Este código já está em uso. Tente outro.',
+      'en': 'This code is taken. Try another.',
+      'es': 'Este código está en uso. Prueba otro.',
+      'zh': '该代码已被占用，请换一个。'
+    },
+    'fr_invalid': {
+      'pt': 'Código inválido. Use 3 a 16 letras/números.',
+      'en': 'Invalid code. Use 3–16 letters/numbers.',
+      'es': 'Código inválido. Usa 3–16 letras/números.',
+      'zh': '代码无效，请用 3-16 个字母/数字。'
+    },
+    'fr_changed': {
+      'pt': 'Código alterado para {c}!',
+      'en': 'Code changed to {c}!',
+      'es': '¡Código cambiado a {c}!',
+      'zh': '代码已更改为 {c}！'
+    },
+    'stats_lands_title': {
+      'pt': 'Terrenos',
+      'en': 'Lands',
+      'es': 'Tierras',
+      'zh': '地'
+    },
+    'stats_lands_total': {
+      'pt': 'total',
+      'en': 'total',
+      'es': 'total',
+      'zh': '总数'
+    },
+    'stats_lands_basic': {
+      'pt': 'básicas',
+      'en': 'basic',
+      'es': 'básicas',
+      'zh': '基本'
+    },
+    'stats_lands_nonbasic': {
+      'pt': 'não básicas',
+      'en': 'nonbasic',
+      'es': 'no básicas',
+      'zh': '非基本'
+    },
+    'stats_lands_multi': {
+      'pt': 'multicor',
+      'en': 'multicolor',
+      'es': 'multicolor',
+      'zh': '多色'
+    },
+    'stats_lands_colorless': {
+      'pt': 'incolores',
+      'en': 'colorless',
+      'es': 'incoloras',
+      'zh': '无色'
+    },
+    'deck_view_list': {
+      'pt': 'Lista',
+      'en': 'List',
+      'es': 'Lista',
+      'zh': '列表'
+    },
+    'deck_view_grid': {
+      'pt': 'Grade',
+      'en': 'Grid',
+      'es': 'Cuadrícula',
+      'zh': '网格'
+    },
+    'deck_search_hint': {
+      'pt': 'Buscar deck…',
+      'en': 'Search decks…',
+      'es': 'Buscar mazos…',
+      'zh': '搜索套牌…'
+    },
+    'deck_filter_fav': {
+      'pt': 'Favoritos',
+      'en': 'Favorites',
+      'es': 'Favoritos',
+      'zh': '收藏'
+    },
+    'deck_no_match': {
+      'pt': 'Nenhum deck com esses filtros.',
+      'en': 'No decks match these filters.',
+      'es': 'Ningún mazo coincide.',
+      'zh': '没有符合筛选的套牌。'
+    },
+    'auth_subtitle': {
+      'pt': 'Entre para salvar sua identidade!',
+      'en': 'Sign in to save your identity!',
+      'es': '¡Inicia sesión para guardar tu identidad!',
+      'zh': '登录以保存您的身份！'
+    },
+    'auth_link_hint': {
+      'pt': 'Vincule uma conta: seu visitante vira permanente sem perder nada',
+      'en': 'Link an account: your guest becomes permanent, nothing is lost',
+      'es': 'Vincula una cuenta: tu invitado se vuelve permanente sin perder nada',
+      'zh': '绑定账号：访客转为永久账号，数据不丢失'
+    },
+    'auth_google': {
+      'pt': 'Continuar com Google',
+      'en': 'Continue with Google',
+      'es': 'Continuar con Google',
+      'zh': '使用 Google 继续'
+    },
+    'auth_or': {
+      'pt': 'ou',
+      'en': 'or',
+      'es': 'o',
+      'zh': '或'
+    },
+    'auth_email': {
+      'pt': 'E-mail',
+      'en': 'Email',
+      'es': 'Correo',
+      'zh': '邮箱'
+    },
+    'auth_password': {
+      'pt': 'Senha',
+      'en': 'Password',
+      'es': 'Contraseña',
+      'zh': '密码'
+    },
+    'auth_signin': {
+      'pt': 'Entrar',
+      'en': 'Sign in',
+      'es': 'Entrar',
+      'zh': '登录'
+    },
+    'auth_signup': {
+      'pt': 'Criar conta',
+      'en': 'Create account',
+      'es': 'Crear cuenta',
+      'zh': '创建账号'
+    },
+    'auth_have_account': {
+      'pt': 'Já tenho conta — entrar',
+      'en': 'I have an account — sign in',
+      'es': 'Ya tengo cuenta — entrar',
+      'zh': '已有账号——登录'
+    },
+    'auth_no_account': {
+      'pt': 'Não tenho conta — criar',
+      'en': 'No account yet — create one',
+      'es': 'Sin cuenta — crear una',
+      'zh': '还没有账号——创建'
+    },
+    'auth_guest': {
+      'pt': 'Continuar como visitante',
+      'en': 'Continue as guest',
+      'es': 'Continuar como invitado',
+      'zh': '以访客继续'
+    },
+    'auth_guest_hint': {
+      'pt': 'Tudo local funciona; o Social usa identidade temporária',
+      'en': 'Everything local works; Social uses a temporary identity',
+      'es': 'Todo lo local funciona; Social usa identidad temporal',
+      'zh': '本地功能都可用；社交使用临时身份'
+    },
+    'auth_device_list_title': {
+      'pt': 'Contas deste dispositivo',
+      'en': 'Accounts on this device',
+      'es': 'Cuentas de este dispositivo',
+      'zh': '本设备账号'
+    },
+    'auth_guest_new': {
+      'pt': 'Criar nova conta temporária',
+      'en': 'Create new temporary account',
+      'es': 'Crear nueva cuenta temporal',
+      'zh': '创建新的临时账号'
+    },
+    'auth_guest_new_title': {
+      'pt': 'Nova conta temporária',
+      'en': 'New temporary account',
+      'es': 'Nueva cuenta temporal',
+      'zh': '新的临时账号'
+    },
+    'auth_guest_new_hint': {
+      'pt': 'Nome / Nick',
+      'en': 'Name / Nick',
+      'es': 'Nombre / Nick',
+      'zh': '名称 / 昵称'
+    },
+    'auth_create': {
+      'pt': 'Criar',
+      'en': 'Create',
+      'es': 'Crear',
+      'zh': '创建'
+    },
+    'auth_device_account': {
+      'pt': 'Conta deste dispositivo',
+      'en': 'This device account',
+      'es': 'Cuenta de este dispositivo',
+      'zh': '本设备账号'
+    },
+    'auth_device_account_hint': {
+      'pt': 'Retoma a conta temporária com seus dados e amigos',
+      'en': 'Resume the temporary account with your data and friends',
+      'es': 'Retoma la cuenta temporal con tus datos y amigos',
+      'zh': '恢复带有您数据和好友的临时账号'
+    },
+    'auth_abandon_title': {
+      'pt': 'Abandonar a conta temporária?',
+      'en': 'Abandon the temporary account?',
+      'es': '¿Abandonar la cuenta temporal?',
+      'zh': '放弃临时账号？'
+    },
+    'auth_abandon_body': {
+      'pt': 'Entrar com outra conta encerra a temporária deste aparelho (amigos, publicações e código serão perdidos). A coleção e os decks locais ficam salvos. Deseja continuar?',
+      'en': 'Signing in with another account ends this device temporary account (friends, posts and code will be lost). Local collection and decks stay saved. Continue?',
+      'es': 'Entrar con otra cuenta termina la temporal de este dispositivo (amigos, publicaciones y código se perderán). La colección y mazos locales se conservan. ¿Continuar?',
+      'zh': '使用其他账号登录将结束本设备的临时账号（好友、分享和代码将丢失）。本地收藏和套牌保留。继续吗？'
+    },
+    'auth_abandon_confirm': {
+      'pt': 'Abandonar e continuar',
+      'en': 'Abandon and continue',
+      'es': 'Abandonar y continuar',
+      'zh': '放弃并继续'
+    },
+    'auth_abandon_guest': {
+      'pt': 'Há uma conta temporária ativa.',
+      'en': 'There is an active temporary account.',
+      'es': 'Hay una cuenta temporal activa.',
+      'zh': '存在处于活动状态的临时账号。'
+    },
+    'auth_account': {
+      'pt': 'Conta vinculada',
+      'en': 'Linked account',
+      'es': 'Cuenta vinculada',
+      'zh': '已绑定账号'
+    },
+    'auth_guest_account': {
+      'pt': 'Visitante (conta temporária)',
+      'en': 'Guest (temporary account)',
+      'es': 'Invitado (cuenta temporal)',
+      'zh': '访客（临时账号）'
+    },
+    'auth_link_account': {
+      'pt': 'Vincular Google / E-mail (mantém tudo)',
+      'en': 'Link Google / Email (keeps everything)',
+      'es': 'Vincular Google / correo (conserva todo)',
+      'zh': '绑定 Google / 邮箱（保留所有数据）'
+    },
+    'auth_signout': {
+      'pt': 'Sair da conta',
+      'en': 'Sign out',
+      'es': 'Cerrar sesión',
+      'zh': '退出登录'
+    },
+    'auth_signout_title': {
+      'pt': 'Sair da conta?',
+      'en': 'Sign out?',
+      'es': '¿Cerrar sesión?',
+      'zh': '退出登录？'
+    },
+    'auth_signout_body': {
+      'pt': 'Sua coleção e decks locais ficam salvos neste aparelho. Você poderá entrar de novo quando quiser.',
+      'en': 'Your local collection and decks stay on this device. You can sign back in anytime.',
+      'es': 'Tu colección y mazos locales quedan en este dispositivo. Puedes volver a entrar cuando quieras.',
+      'zh': '本地收藏和套牌保留在本设备上，可随时重新登录。'
+    },
+    'auth_signout_guest_body': {
+      'pt': 'Você voltará à tela de login sem vincular nada. Sua conta temporária continua salva neste aparelho em "Conta deste dispositivo". Ela poderá ser escolhida novamente em "Continuar como convidado". Entrar com Google ou e-mail não apaga nem abandona a temporária.',
+      'en': 'You will return to the login screen without linking anything. Your temporary account stays saved on this device under "This device account". You can choose it again under "Continue as guest". Signing in with Google or email does not delete or abandon it.',
+      'es': 'Volverás al login sin vincular nada. Tu cuenta temporal queda guardada en este dispositivo en "Cuenta de este dispositivo". Puedes volver a elegirla en "Continuar como invitado". Entrar con Google o correo no la elimina ni la abandona.',
+      'zh': '您将返回登录页而不绑定任何账号。临时账号会保留在本设备的“本设备账号”中，可在“以访客身份继续”中再次选择。使用 Google 或邮箱登录不会删除或放弃该临时账号。'
+    },
+    'auth_no_identity': {
+      'pt': 'Não foi possível criar a identidade. Tente de novo.',
+      'en': 'Could not create identity. Try again.',
+      'es': 'No se pudo crear la identidad. Inténtalo de nuevo.',
+      'zh': '无法创建身份，请重试。'
+    },
+    'auth_google_config': {
+      'pt': 'Login Google indisponível (configuração nativa pendente). Use e-mail ou visitante.',
+      'en': 'Google sign-in unavailable (native setup pending). Use email or guest.',
+      'es': 'Google no disponible (configuración nativa pendiente). Usa correo o invitado.',
+      'zh': 'Google 登录不可用（原生配置待完成），请用邮箱或访客。'
+    },
+    'auth_bad_email': {
+      'pt': 'E-mail inválido.',
+      'en': 'Invalid email.',
+      'es': 'Correo inválido.',
+      'zh': '邮箱无效。'
+    },
+    'auth_weak_password': {
+      'pt': 'Senha fraca (mínimo 6 caracteres).',
+      'en': 'Weak password (minimum 6 characters).',
+      'es': 'Contraseña débil (mínimo 6 caracteres).',
+      'zh': '密码太弱（至少 6 个字符）。'
+    },
+    'auth_user_not_found': {
+      'pt': 'Conta não encontrada. Confira o e-mail ou crie uma conta.',
+      'en': 'Account not found. Check the email or create an account.',
+      'es': 'Cuenta no encontrada. Revisa el correo o crea una cuenta.',
+      'zh': '账号不存在，请检查邮箱或创建账号。'
+    },
+    'auth_wrong_password': {
+      'pt': 'E-mail ou senha incorretos.',
+      'en': 'Incorrect email or password.',
+      'es': 'Correo o contraseña incorrectos.',
+      'zh': '邮箱或密码错误。'
+    },
+    'auth_email_in_use': {
+      'pt': 'Este e-mail já tem conta. Entre em vez de criar.',
+      'en': 'This email already has an account. Sign in instead.',
+      'es': 'Este correo ya tiene cuenta. Entra en vez de crear.',
+      'zh': '该邮箱已有账号，请直接登录。'
+    },
+    'auth_network': {
+      'pt': 'Sem conexão. Verifique a internet e tente de novo.',
+      'en': 'No connection. Check the internet and try again.',
+      'es': 'Sin conexión. Revisa internet e inténtalo de nuevo.',
+      'zh': '无网络连接，请检查后重试。'
+    },
+    'auth_provider_linked': {
+      'pt': 'Esta conta já está vinculada.',
+      'en': 'This account is already linked.',
+      'es': 'Esta cuenta ya está vinculada.',
+      'zh': '该账号已绑定。'
+    },
+    'auth_too_many': {
+      'pt': 'Muitas tentativas. Aguarde um pouco.',
+      'en': 'Too many attempts. Wait a bit.',
+      'es': 'Demasiados intentos. Espera un poco.',
+      'zh': '尝试次数过多，请稍后再试。'
+    },
+    'auth_generic': {
+      'pt': 'Falha na autenticação. Tente de novo.',
+      'en': 'Authentication failed. Try again.',
+      'es': 'Autenticación fallida. Inténtalo de nuevo.',
+      'zh': '认证失败，请重试。'
+    },
+    'acc_type_guest': {
+      'pt': 'Temporária',
+      'en': 'Guest',
+      'es': 'Temporal',
+      'zh': '临时'
+    },
+    'acc_type_google': {
+      'pt': 'Google',
+      'en': 'Google',
+      'es': 'Google',
+      'zh': 'Google'
+    },
+    'acc_type_email': {
+      'pt': 'E-mail',
+      'en': 'Email',
+      'es': 'Correo',
+      'zh': '邮箱'
+    },
+    'acc_type_local': {
+      'pt': 'Arquivo local',
+      'en': 'Local file',
+      'es': 'Archivo local',
+      'zh': '本地文件'
+    },
+    'acc_type_unknown': {
+      'pt': 'Conta',
+      'en': 'Account',
+      'es': 'Cuenta',
+      'zh': '账号'
+    },
+    'acc_switch_required': {
+      'pt': 'Entre com essa conta para usá-la.',
+      'en': 'Sign in with that account to use it.',
+      'es': 'Entra con esa cuenta para usarla.',
+      'zh': '请登录该账号后使用。'
+    },
+    'acc_adopt_title': {
+      'pt': 'Adotar arquivo nesta conta?',
+      'en': 'Adopt file into this account?',
+      'es': '¿Adoptar archivo en esta cuenta?',
+      'zh': '将文件认领到此账号？'
+    },
+    'acc_adopt_body': {
+      'pt': '"{n}" passa a pertencer a esta conta. Só é possível se a conta ainda não tiver arquivo próprio.',
+      'en': '"{n}" becomes owned by this account. Only possible if the account has no file yet.',
+      'es': '"{n}" pasará a esta cuenta. Solo si la cuenta aún no tiene archivo.',
+      'zh': '“{n}”将归属此账号，仅当账号尚无文件时可行。'
+    },
+    'acc_adopt_confirm': {
+      'pt': 'Adotar',
+      'en': 'Adopt',
+      'es': 'Adoptar',
+      'zh': '认领'
+    },
+    'acc_adopt_blocked': {
+      'pt': 'A conta já tem arquivo próprio. Apague o perfil antigo ou use outro.',
+      'en': 'The account already has its own file. Delete the old profile or use another.',
+      'es': 'La cuenta ya tiene archivo propio. Elimina el perfil viejo u otro.',
+      'zh': '该账号已有文件，请删除旧档案或换一个。'
+    },
+    'acc_backup': {
+      'pt': 'Backup da conta',
+      'en': 'Account backup',
+      'es': 'Copia de la cuenta',
+      'zh': '账号备份'
+    },
+    'acc_backup_hint': {
+      'pt': 'Salva decks e coleção na conta (vale após reinstalar)',
+      'en': 'Save decks and collection to the account (survives reinstall)',
+      'es': 'Guarda mazos y colección en la cuenta (sobrevive reinstalar)',
+      'zh': '将套牌和收藏保存到账号（重装后可恢复）'
+    },
+    'acc_backup_guest': {
+      'pt': 'Backup exige conta permanente (Google ou e-mail).',
+      'en': 'Backup requires a permanent account (Google or email).',
+      'es': 'La copia requiere cuenta permanente (Google o correo).',
+      'zh': '备份需要永久账号（Google 或邮箱）。'
+    },
+    'acc_backed_up': {
+      'pt': 'Backup salvo na conta!',
+      'en': 'Backup saved to the account!',
+      'es': '¡Copia guardada en la cuenta!',
+      'zh': '已备份到账号！'
+    },
+    'acc_push_denied': {
+      'pt': 'Sem permissão no servidor: publique as regras (firebase deploy --only database).',
+      'en': 'No server permission: publish the rules (firebase deploy --only database).',
+      'es': 'Sin permiso en el servidor: publica las reglas (firebase deploy --only database).',
+      'zh': '服务器无权限：请发布规则（firebase deploy --only database）。'
+    },
+    'acc_restored': {
+      'pt': 'Conta restaurada: {d} decks, {c} cartas!',
+      'en': 'Account restored: {d} decks, {c} cards!',
+      'es': '¡Cuenta restaurada: {d} mazos, {c} cartas!',
+      'zh': '账号已恢复：{d} 套牌，{c} 张牌！'
+    },
+    'cat_commander': {
+      'pt': 'Comandante',
+      'en': 'Commander',
+      'es': 'Comandante',
+      'zh': '指挥官'
+    },
+    'cat_creatures': {
+      'pt': 'Criaturas',
+      'en': 'Creatures',
+      'es': 'Criaturas',
+      'zh': '生物'
+    },
+    'cat_planeswalkers': {
+      'pt': 'Planinautas',
+      'en': 'Planeswalkers',
+      'es': 'Planeswalkers',
+      'zh': '鹏洛客'
+    },
+    'cat_artifacts': {
+      'pt': 'Artefatos',
+      'en': 'Artifacts',
+      'es': 'Artefactos',
+      'zh': '神器'
+    },
+    'cat_enchantments': {
+      'pt': 'Encantamentos',
+      'en': 'Enchantments',
+      'es': 'Encantamientos',
+      'zh': '结界'
+    },
+    'cat_instants': {
+      'pt': 'Instantâneas',
+      'en': 'Instants',
+      'es': 'Instantáneos',
+      'zh': '瞬间'
+    },
+    'cat_sorceries': {
+      'pt': 'Feitiços',
+      'en': 'Sorceries',
+      'es': 'Conjuros',
+      'zh': '法术'
+    },
+    'cat_lands': {
+      'pt': 'Terrenos',
+      'en': 'Lands',
+      'es': 'Tierras',
+      'zh': '地'
+    },
+    'cat_other': {
+      'pt': 'Outras',
+      'en': 'Other',
+      'es': 'Otras',
+      'zh': '其他'
+    },
+    'soc_edit_profile': {
+      'pt': 'Perfil público',
+      'en': 'Public profile',
+      'es': 'Perfil público',
+      'zh': '公开资料'
+    },
+    'soc_edit_name': {
+      'pt': 'Editar nome',
+      'en': 'Edit name',
+      'es': 'Editar nombre',
+      'zh': '编辑名称'
+    },
+    'soc_pick_avatar': {
+      'pt': 'Escolher ícone',
+      'en': 'Pick an icon',
+      'es': 'Elegir ícono',
+      'zh': '选择图标'
+    },
+    'soc_show_more': {
+      'pt': 'Mostrar mais',
+      'en': 'Show more',
+      'es': 'Mostrar más',
+      'zh': '显示更多'
+    },
+    'soc_display_name': {
+      'pt': 'Nome de exibição',
+      'en': 'Display name',
+      'es': 'Nombre visible',
+      'zh': '显示名称'
+    },
+    'soc_bio': {
+      'pt': 'Bio',
+      'en': 'Bio',
+      'es': 'Bio',
+      'zh': '简介'
+    },
+    'soc_bio_hint': {
+      'pt': 'Ex: jogador de Commander, adoro tribais…',
+      'en': 'E.g. Commander player, love tribals…',
+      'es': 'Ej.: juego Commander, me encantan los tribales…',
+      'zh': '例如：指挥官玩家，喜欢部族…'
+    },
+    'soc_save': {
+      'pt': 'Salvar perfil',
+      'en': 'Save profile',
+      'es': 'Guardar perfil',
+      'zh': '保存资料'
+    },
+    'soc_saved': {
+      'pt': 'Perfil salvo.',
+      'en': 'Profile saved.',
+      'es': 'Perfil guardado.',
+      'zh': '资料已保存。'
+    },
+    'soc_my_published': {
+      'pt': 'Meus decks publicados',
+      'en': 'My published decks',
+      'es': 'Mis mazos publicados',
+      'zh': '我发布的套牌'
+    },
+    'soc_my_favorites': {
+      'pt': 'Meus favoritos',
+      'en': 'My favorites',
+      'es': 'Mis favoritos',
+      'zh': '我的收藏'
+    },
+    'soc_stats_published': {
+      'pt': 'Publicados',
+      'en': 'Published',
+      'es': 'Publicados',
+      'zh': '已发布'
+    },
+    'soc_stats_favorites': {
+      'pt': 'Favoritos',
+      'en': 'Favorites',
+      'es': 'Favoritos',
+      'zh': '收藏'
+    },
+    'soc_stats_likes': {
+      'pt': 'Curtidas recebidas',
+      'en': 'Likes received',
+      'es': 'Me gusta recibidos',
+      'zh': '收到的点赞'
+    },
+    'soc_manage_profiles': {
+      'pt': 'Gerenciar perfis deste aparelho',
+      'en': 'Manage profiles on this device',
+      'es': 'Gestionar perfiles de este dispositivo',
+      'zh': '管理本设备用户'
+    },
+    'soc_unpublish': {
+      'pt': 'Despublicar',
+      'en': 'Unpublish',
+      'es': 'Despublicar',
+      'zh': '取消发布'
+    },
+    'soc_unpublish_title': {
+      'pt': 'Despublicar "{n}"?',
+      'en': 'Unpublish "{n}"?',
+      'es': '¿Despublicar "{n}"?',
+      'zh': '取消发布“{n}”？'
+    },
+    'soc_unpublish_body': {
+      'pt': 'A publicação, as curtidas e avaliações serão removidas.',
+      'en': 'The post, likes and ratings will be removed.',
+      'es': 'La publicación, los me gusta y las calificaciones se eliminarán.',
+      'zh': '分享、点赞和评分将被删除。'
+    },
+    'soc_unpublished': {
+      'pt': 'Publicação removida.',
+      'en': 'Post removed.',
+      'es': 'Publicación eliminada.',
+      'zh': '分享已删除。'
+    },
+    'soc_profile_title': {
+      'pt': 'Perfil',
+      'en': 'Profile',
+      'es': 'Perfil',
+      'zh': '资料'
+    },
+    'soc_unknown_player': {
+      'pt': 'Jogador sem nome',
+      'en': 'Unnamed player',
+      'es': 'Jugador sin nombre',
+      'zh': '未命名玩家'
+    },
+    'soc_decks': {
+      'pt': 'Decks',
+      'en': 'Decks',
+      'es': 'Mazos',
+      'zh': '套牌'
+    },
+    'soc_likes': {
+      'pt': 'Curtidas',
+      'en': 'Likes',
+      'es': 'Me gusta',
+      'zh': '点赞'
+    },
+    'soc_published': {
+      'pt': 'Decks publicados',
+      'en': 'Published decks',
+      'es': 'Mazos publicados',
+      'zh': '发布的套牌'
+    },
+    'soc_block': {
+      'pt': 'Bloquear',
+      'en': 'Block',
+      'es': 'Bloquear',
+      'zh': '屏蔽'
+    },
+    'soc_unblock': {
+      'pt': 'Desbloquear',
+      'en': 'Unblock',
+      'es': 'Desbloquear',
+      'zh': '取消屏蔽'
+    },
+    'soc_blocked_msg': {
+      'pt': 'Jogador bloqueado.',
+      'en': 'Player blocked.',
+      'es': 'Jugador bloqueado.',
+      'zh': '已屏蔽该玩家。'
+    },
+    'soc_unblocked_msg': {
+      'pt': 'Jogador desbloqueado.',
+      'en': 'Player unblocked.',
+      'es': 'Jugador desbloqueado.',
+      'zh': '已取消屏蔽。'
     },
     'nav_show': {
       'pt': 'Mostrar menu',

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../services/app_events.dart';
+import '../services/account_sync.dart';
 import '../services/app_locale.dart';
 import '../services/display_prefs.dart';
 import '../services/play_prefs.dart';
@@ -382,6 +385,47 @@ class _SettingsPageState extends State<SettingsPage> {
                                         content: Text(AppLocale.t(
                                             'settings_quote_updated'))));
                                 setState(() {});
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Card(
+                          child: ListTile(
+                            leading: const Icon(Icons.cloud_upload_outlined,
+                                color: Color(0xFFD4A84B)),
+                            title: Text(AppLocale.t('acc_backup')),
+                            subtitle:
+                                Text(AppLocale.t('acc_backup_hint')),
+                            onTap: () async {
+                              if (!AccountSync.canSync) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context)
+                                      .showSnackBar(SnackBar(
+                                          content: Text(AppLocale.t(
+                                              'acc_backup_guest'))));
+                                }
+                                return;
+                              }
+                              try {
+                                await AccountSync.push();
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context)
+                                      .showSnackBar(SnackBar(
+                                          content: Text(AppLocale.t(
+                                              'acc_backed_up'))));
+                                }
+                              } catch (e) {
+                                if (!context.mounted) return;
+                                final msg = e is FirebaseException &&
+                                        e.code == 'permission-denied'
+                                    ? AppLocale.t(
+                                        'acc_push_denied')
+                                    : AppLocale.t(
+                                        'auth_network');
+                                ScaffoldMessenger.of(context)
+                                    .showSnackBar(
+                                        SnackBar(content: Text(msg)));
                               }
                             },
                           ),

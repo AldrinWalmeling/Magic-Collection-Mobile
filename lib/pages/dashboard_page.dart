@@ -10,6 +10,7 @@ import '../services/app_locale.dart';
 import '../services/currency_service.dart';
 import '../services/price_reference.dart';
 import '../services/price_update_service.dart';
+import '../services/mana_repair_service.dart';
 import '../services/rarity_repair_service.dart';
 import '../theme/app_theme.dart';
 import 'card_detail_sheet.dart';
@@ -233,10 +234,13 @@ class _DashboardPageState extends State<DashboardPage> {
     _repairingRarities = true;
 
     try {
-      final fixed =
-          await RarityRepairService.repairMissingRarities();
+      final results = await Future.wait([
+        RarityRepairService.repairMissingRarities(),
+        ManaRepairService.repairMissingCardData(),
+      ]);
+      final fixed = results.fold<int>(0, (s, v) => s + v);
       if (fixed > 0 && mounted) {
-        // Recarrega uma vez com as raridades corrigidas (a próxima
+        // Recarrega uma vez com os dados corrigidos (a próxima
         // passagem não acha mais nada vazio, então não há loop).
         await _load();
       }

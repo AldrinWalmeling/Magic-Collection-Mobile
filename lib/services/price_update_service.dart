@@ -51,6 +51,8 @@ class PriceUpdateService extends ChangeNotifier {
   String? _currentCard;
   DateTime? _lastErrorAt;
   String? _lastError;
+  DateTime _lastProgressNotify =
+      DateTime.fromMillisecondsSinceEpoch(0);
 
   bool get isRunning => _running;
   PriceUpdateState get state => _state;
@@ -68,6 +70,18 @@ class PriceUpdateService extends ChangeNotifier {
   }
 
   void _notifyProgress() {
+    // Throttle: resolves rápidos geravam um rebuild do Painel por
+    // carta (jank). Contagem regressiva do pause segue em 1s.
+    final now = DateTime.now();
+    if (now.difference(_lastProgressNotify).inMilliseconds < 500) {
+      return;
+    }
+    _lastProgressNotify = now;
+    notifyListeners();
+  }
+
+  void _notifyProgressNow() {
+    _lastProgressNotify = DateTime.now();
     notifyListeners();
   }
 
@@ -278,11 +292,12 @@ class PriceUpdateService extends ChangeNotifier {
       if (res.source == 'exact' || res.source == 'fallback-same-print') {
         await _removePendingId(localId);
       } else {
-        // Aproximado/sem preço: tenta de novo no próximo ciclo.
-        await _savePendingIds({
-          ...(await _loadPendingIds()),
-          localId,
-        });
+        // Aproximado/sem preço é RESPOSTA FINAL (não erro): sai da
+        // fila. Antes ficava pendente para sempre e cada ciclo
+        // refazia as mesmas dezenas de requisições (o loop).
+        // O ciclo de 24h continua revendo todas as cartas de qualquer
+        // forma quando não há pendências.
+        await _removePendingId(localId);
       }
       return true;
     } catch (e) {
@@ -297,7 +312,9 @@ class PriceUpdateService extends ChangeNotifier {
 
   /// Atualiza UMA carta sob demanda (botão "atualizar preço").
   /// Sempre consulta a API, ignorando o intervalo de 24h.
+  /// Durante pause de rate-limit não adianta pedir: retorna false.
   Future<bool> refreshSingleCard(int localId) async {
+    if (_state == PriceUpdateState.paused) return false;
     final wasRunning = _running;
     if (!_running) {
       _running = true;
@@ -381,13 +398,16 @@ class PriceUpdateService extends ChangeNotifier {
       }
 
       _total = ordered.length;
-      _notifyProgress();
+      _notifyProgressNow();
 
+      final seenInRun = <int>{};
       for (final row in ordered) {
         if (!_running) break;
 
         final localId = (row['id'] as num?)?.toInt();
         if (localId == null) continue;
+        // Nunca a mesma carta 2x no mesmo ciclo.
+        if (!seenInRun.add(localId)) continue;
 
         final scryfallId = (row['scryfall_id'] ?? '').toString().trim();
         final name = ((row['name'] ?? row['printed_name']) ?? '')
@@ -422,8 +442,11 @@ class PriceUpdateService extends ChangeNotifier {
         }
       }
 
-      final pendingAfter = await _loadPendingIds();
-      if (updated > 0 && pendingAfter.isEmpty && _running) {
+      // Ciclo concluído: carimba 24h. Pendência restante é só erro
+      // transitório (429/rede) para retomar depois — resposta
+      // aproximada/sem preço NÃO segura o carimbo (era isso que
+      // fazia todo arranque rodar o ciclo inteiro de novo).
+      if (_running) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(
           await _prefsKey(),

@@ -46,9 +46,9 @@ class RarityRepairService {
       if (id == null) continue;
       String? rarity;
 
-      // 1. Impressão exata.
+      // 1. Impressão exata (só UUID real; lixo legado dá 404).
       final scryId = (row['scryfall_id'] ?? '').toString().trim();
-      if (scryId.isNotEmpty) {
+      if (scryId.isNotEmpty && scryId.length >= 32) {
         try {
           final exact = await api.getCardByScryfallId(scryId);
           rarity = (exact?['rarity'] ?? '').toString().trim();
